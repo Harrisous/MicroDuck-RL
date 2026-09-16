@@ -1,3 +1,14 @@
+> [!NOTE]
+> **About this repository / 关于本仓库**
+>
+> This is a personal study copy of [pollen-robotics/microduck_rl](https://github.com/pollen-robotics/microduck_rl) (`develop` branch), not a GitHub fork. The upstream code, docs and robot models are kept unchanged; my own experiments, notes and tools are in [`lab/`](lab/).
+>
+> - Upstream: Copyright 2026 [Pollen Robotics](https://github.com/pollen-robotics) and contributors. Code is licensed under Apache-2.0 ([LICENSE](LICENSE)); 3D model files are licensed under CC BY-SA-NC (see [License](#license)).
+> - The image and the video below are GitHub attachments uploaded by [Antoine Pirrone](https://github.com/apirrone) (Pollen Robotics). They belong to their authors and are not stored in this repository.
+> - Everything below this note is the upstream README, unmodified.
+>
+> 本仓库是 Pollen Robotics 的 [microduck_rl](https://github.com/pollen-robotics/microduck_rl)（`develop` 分支）的个人学习副本，不是 GitHub fork。上游的代码、文档和机器人模型原样保留，我自己的实验记录、讲义和工具都在 [`lab/`](lab/)。代码按 Apache-2.0 授权，3D 模型文件按 CC BY-SA-NC 授权。下方的图片和视频由 Antoine Pirrone（Pollen Robotics）以 GitHub 附件形式上传，版权归原作者，不存放在本仓库中。本说明以下为上游 README 原文。
+
 # Microduck RL
 
 <img width="2215" height="884" alt="image" src="https://github.com/user-attachments/assets/5db7cc83-b3ce-4f7c-83f0-0572a63baed7" />
