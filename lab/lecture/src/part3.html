@@ -1,0 +1,165 @@
+<!-- ================= 第 3 章 ================= -->
+<section class="sec" id="c3"><div class="wrap">
+  <p class="eyebrow"><span class="idx">第 3 章</span>起点</p>
+  <h2>起点是随机</h2>
+
+  <p>第 0 轮的鸭子在抽搐，原因有两层。</p>
+
+  <p>第一层显而易见：策略网络的参数是随机初始化的，它输出的目标角没有任何道理。</p>
+
+  <p>第二层才是重点：就算网络输出了合理的角度，鸭子执行的也<em class="zh">不是</em>那个角度。策略真正输出的是一个概率分布。网络算出 14 个均值 μ，实际动作是在均值附近<em class="zh">抽一个</em>：</p>
+
+  <div class="formula">
+    <div class="fx">a ~ 𝒩( μ(o), σ² )　　每个关节独立抽样</div>
+    <div class="why">μ 由网络根据观测算出，代表"我认为该做什么"；σ 是刻意保留的随机幅度，代表"我不确定，多试试别的"。</div>
+  </div>
+
+  <p>为什么要故意抖？因为不试就永远不知道。如果策略每次都精确执行自己当前认为最好的动作，它就只能在自己已有的认知里打转，任何"意料之外的好动作"都没有机会被发现。这份随机叫<strong>探索</strong><span class="en">（exploration）</span>，它不是缺陷，是学习的原材料。</p>
+
+  <p>训练开始时 σ = 1.0 弧度。换算一下：57°的标准差。也就是说，网络想让膝盖去 10°，实际命令可能是 70°，也可能是 −45°。这就是第 0 轮抽搐的真相：<em class="zh">你看到的不是愚蠢，是大幅度的探索</em>。</p>
+
+  <p>关键设定：σ 本身也是可学习的参数（14 个关节各一个）。没有任何代码规定它何时收小。训练过程中，策略自己发现"少抖一点得分更高"，于是 σ 一路降。这次训练结束时 σ 平均只剩 0.177，是出生时的六分之一。序章说的"动作干净利落"，指的就是这条曲线（第 12 章会亲眼看到它）。</p>
+
+  <div class="note"><span class="t">一个值得停下来品的事实</span>"什么时候该大胆尝试、什么时候该稳定发挥"，这个听起来很高级的决策，在这里没有任何专门的逻辑。它只是 14 个数字，跟着分数的梯度自己变化。RL 里很多"聪明行为"都是这样：不是设计出来的，是分数逼出来的。</div>
+
+  <p class="hook">→ 现在鸭子会试了（随机），也有分数了（第 8 章的评分表在打分）。缺的是那座桥：<b>怎么把"这局 87 分"变成"参数往哪儿调"？第 4 章，整个领域最核心的一个想法。</b></p>
+</div></section>
+
+<hr class="divider">
+
+<!-- ================= 第 4 章 ================= -->
+<section class="sec" id="c4"><div class="wrap">
+  <p class="eyebrow"><span class="idx">第 4 章</span>核心思想</p>
+  <h2>朝好的方向挪一点</h2>
+
+  <p>先把答案用一句话说完，再看它为什么成立：</p>
+
+  <div class="note"><span class="t">REINFORCE（1992）</span>让当前策略跑一批回合。得分高的回合里出现过的动作，把它们的概率调高一点；得分低的回合里的动作，调低一点。就这样。</div>
+
+  <p>注意这句话里没有的东西：没有人告诉网络<em class="zh">哪个关节</em>错了，没有人给出<em class="zh">正确答案</em>是什么。唯一的反馈是一个总分。这和监督学习的差别是本质性的，监督学习的每道题都有标准答案，这里只有考完才知道的总分。</p>
+
+  <p>"把概率调高一点"在数学上是严格可算的。对任何一个动作 a，梯度 ∇log π(a|o) 指向的就是"让这个动作在这个观测下更可能出现"的参数方向，它由神经网络的反向传播直接给出。于是整个算法就是一个加权平均：</p>
+
+  <div class="formula">
+    <div class="fx">∇J = E[ Σ<sub>t</sub> ∇log π(a<sub>t</sub>|o<sub>t</sub>) · R ]　　R = 这一局的总分</div>
+    <div class="why">用每一局的总分 R 作权重，把这一局里所有动作的"更可能方向"加权求和。分高的局权重大，它的动作被整体加强。</div>
+  </div>
+
+  <p>这个公式有一个容易被忽略的奇迹。第 1 章说过，写规则走不通是因为物理太复杂；其实更深的障碍是：<em class="zh">物理引擎根本不可求导</em>。脚触地的瞬间力是跳变的，梯度传不过去，真实世界更没有梯度可言。而上面的公式完全不需要对世界求导。它只要求两件事：世界能<em class="zh">采样</em>（跑一局看看），策略自己可导（神经网络当然可导）。这就是为什么这套方法既能训仿真也能训真机。</p>
+
+  <details class="fold"><summary>展开：这个公式是怎么来的（四步，只用一次微积分技巧）</summary><div class="fold-body">
+    <div class="step"><span class="n">1</span><div>目标是期望总分 J(θ) = E<sub>τ∼π<sub>θ</sub></sub>[R(τ)]，τ 是一整局的经历。把期望写成积分再求导：<div class="formula" style="margin:8px 0"><div class="fx">∇<sub>θ</sub>J = ∫ ∇<sub>θ</sub>p<sub>θ</sub>(τ)·R(τ) dτ</div><div class="why">关键观察：R(τ) 里没有 θ。给定这一局，分已经定了。θ 只影响"哪种局更容易发生"。</div></div></div></div>
+    <div class="step"><span class="n">2</span><div>用恒等式 ∇p = p·∇log p（对数导数技巧）把 p 凑回来：<div class="formula" style="margin:8px 0"><div class="fx">= ∫ p<sub>θ</sub>(τ)·∇<sub>θ</sub>log p<sub>θ</sub>(τ)·R(τ) dτ = E<sub>τ</sub>[ ∇<sub>θ</sub>log p<sub>θ</sub>(τ)·R(τ) ]</div><div class="why">式子重新变回期望，意味着可以用采样近似：跑一批局，求平均。</div></div></div></div>
+    <div class="step"><span class="n">3</span><div>展开 log p<sub>θ</sub>(τ)。一局的概率 = 初始状态的概率 × 每步物理转移的概率 × 每步策略选动作的概率。取对数变成求和，对 θ 求导时，<em class="zh">物理项里没有 θ，整块消失</em>：<div class="formula" style="margin:8px 0"><div class="fx">∇<sub>θ</sub>log p<sub>θ</sub>(τ) = Σ<sub>t</sub> ∇<sub>θ</sub>log π<sub>θ</sub>(a<sub>t</sub>|o<sub>t</sub>)</div><div class="why">世界的模型在这一步被整体约掉。剩下的每一项都只关于我们自己的网络。</div></div></div></div>
+    <div class="step"><span class="n">4</span><div>代回第 2 步，就是正文的公式。对高斯策略，log π 还有现成的解析式，∇ 由自动微分免费提供。</div></div>
+  </div></details>
+
+  <p>光看公式没有感觉。下面这个实验台把问题缩到一维：一个只有一个"关节"的鸭子，动作是一个数 a，地形的高度就是得分。它的策略是一维高斯（一个 μ、一个 σ），跑的是货真价实的 REINFORCE，就在你的浏览器里：</p>
+
+  <figure class="fig" style="max-width:1000px">
+    <div class="fighead"><span class="figtag">图 4.1 · 实验台</span><span class="figtitle">亲手跑一个最小的 REINFORCE</span></div>
+    <div class="figbody">
+      <div class="playguide"><b>建议玩法</b>：① 先点几次"单步"，看下方红绿刻度：每批 64 次尝试，绿的高于平均分、被加强，红的反之。② 点"训练"，看橙色分布先滑向<b>左边的小山头</b>（局部最优），再靠零星的幸运样本发现右边的高峰，整体翻过去。③ 翻山后看 σ：分布越收越窄，"探索"自然退场。④ 重置，把"基线"关掉再训一次，对比底部的梯度噪声读数，感受下一章要解决的问题。</div>
+      <div class="figctl">
+        <button class="bt primary" id="pg-run">▶ 训练</button>
+        <button class="bt" id="pg-step">单步</button>
+        <button class="bt" id="pg-reset">重置</button>
+        <button class="bt" id="pg-base" aria-pressed="true">基线：开</button>
+        <span class="readout">μ=<b id="pg-mu">−1.90</b> σ=<b id="pg-sig">0.90</b> 期望得分=<b id="pg-er">—</b> 已训 <b id="pg-n">0</b> 批</span>
+      </div>
+      <div class="chart" id="pg-canvas"></div>
+      <div class="figctl" style="justify-content:space-between">
+        <span class="readout">梯度估计的噪声（越小越稳）：带基线 <b id="pg-var-on">—</b> ／ 不带 <b id="pg-var-off">—</b></span>
+        <span class="small">黑线：得分地形（对策略保密）　橙色：策略的分布</span>
+      </div>
+    </div>
+    <figcaption>怎么看：如果它翻不过山，多半是 σ 已经收得太小，重置再来，运气好前几批就能翻。这个小演示里藏着真鸭子的两个大道理：<b>探索的幅度决定你能发现多远的好动作</b>（σ 收太早就永远困在小山头，这个病叫"熵坍缩"，第 8 章有它的实况）；<b>梯度是从随机尝试里"统计"出来的，所以天生带噪声</b>。降噪就是下一章的全部内容。</figcaption>
+  </figure>
+
+  <p class="hook">→ 你应该已经注意到了：基线开关一关，梯度噪声大了好几倍。那个开关是什么？为什么差这么多？<b>第 5 章：把账记准。</b></p>
+</div></section>
+
+<hr class="divider">
+
+<!-- ================= 第 5 章 ================= -->
+<section class="sec" id="c5"><div class="wrap">
+  <p class="eyebrow"><span class="idx">第 5 章</span>降噪</p>
+  <h2>把分数记到每一步头上</h2>
+
+  <p>REINFORCE 数学上没错，实际上几乎没法用来训鸭子。问题出在记账方式上。</p>
+
+  <p>想象一支球队赢了比赛，教练宣布：全队每个动作都加同样的分。传丢的球和绝杀的球，功劳一样。这就是 REINFORCE 干的事：一局 1000 步共得 87 分，于是这局里每一步的动作都按 87 分被加强，包括那几步差点摔倒的。平均下来方向是对的（数学保证），但单批数据里全是噪声，得靠海量样本才能把真信号淘出来。</p>
+
+  <p>降噪分三次升级，一次比一次精细。</p>
+
+  <h3>升级一：比较，而不是打分</h3>
+
+  <p>87 分算好还是差？取决于平均水平。如果平时都拿 90，这局其实是退步。所以别用原始分 R 当权重，用 <em class="zh">R 减去预期</em>：高于预期的动作才加强，低于预期的削弱。这个"预期"就是图 4.1 里那个开关，术语叫<strong>基线</strong><span class="en">（baseline）</span>。你已经亲眼见过它把梯度噪声压下去多少。</p>
+
+  <details class="fold"><summary>展开：为什么减掉基线不会引入偏差（一行证明）</summary><div class="fold-body">
+    <div class="formula" style="margin:10px 0"><div class="fx">E[ ∇log π(a|o) · b(o) ] = b(o) · ∇<sub>θ</sub> E[1] = 0</div><div class="why">∇log π 对动作分布取期望，等于"概率之和恒为 1"这个常数的导数，恒为零。所以减去任何不依赖动作的量 b(o)，梯度的期望不变，方差却可以大幅下降。这是 RL 里性价比最高的一行数学。</div></div>
+  </div></details>
+
+  <h3>升级二：预期也要逐状态估——请出评论家</h3>
+
+  <p>批内平均分是个粗糙的预期：站得稳稳的时刻和摇摇欲坠的时刻，预期得分本不该一样。理想的基线是<em class="zh">这个状态本来值多少分</em>，记作 V(o)。它没人告诉我们，那就再训一个网络去估：读入观测，输出一个数，用回归去拟合实际拿到的分。</p>
+
+  <p>这个网络不控制鸭子，只负责估价，叫<strong>评论家</strong><span class="en">（critic）</span>；控制鸭子的那个叫<strong>演员</strong><span class="en">（actor）</span>。合起来就是大名鼎鼎的 Actor-Critic 架构。此后记账的单位变成：</p>
+
+  <div class="formula">
+    <div class="fx">A = 实际得分 − V(o)　　（优势，advantage：比这个状态的正常水平好出多少）</div>
+  </div>
+
+  <div class="war">
+    <div class="tag lesson">这个仓库的漂亮设计：给评论家开天眼</div>
+    <p>评论家只在训练时存在，不上真机。microduck_rl 把这一点用足了：演员只能看真机上有的读数，而且被加了噪声和延迟（第 11 章）；评论家却直接读仿真器的真值，还额外拿到演员没有的<em class="zh">真实线速度</em>。第 2 章说鸭子不知道自己走多快，现在补上另一半：<b>它不知道，但给它记账的裁判知道</b>。演员照样学会盲走，账却记得清清楚楚。这个技巧叫非对称 Actor-Critic，配置里就一行：<code class="inline">critic 独享 base_lin_vel</code>。</p>
+    <p class="src">microduck_velocity_env_cfg.py:539 「privileged information」</p>
+  </div>
+
+  <h3>升级三：这一步的功劳，该算到多远的未来？</h3>
+
+  <p>还有一个记账问题没解决：第 100 步的一个动作，该为第 900 步的摔倒负责吗？直觉说不该，隔太远了。这个直觉用一个参数表达：<strong>折扣因子</strong> γ。计算某一步的功过时，未来第 t 步的分数只算 γ<sup>t</sup> 的权重，越远越不算数。有效的"责任窗口"约是 1/(1−γ) 步。</p>
+
+  <p>这次训练 γ = 0.99，在 50 Hz 下就是 100 步、两秒钟。两秒不是随便选的，拖一下滑块就明白：</p>
+
+  <figure class="fig" style="max-width:1000px">
+    <div class="fighead"><span class="figtag">图 5.1 · 交互</span><span class="figtitle">γ 决定"往后看多远"</span></div>
+    <div class="figbody">
+      <div class="figctl">
+        <label>γ = <span class="readout" id="gv">0.990</span><input type="range" id="gslider" min="900" max="999" value="990" aria-label="折扣因子 gamma"></label>
+        <span class="readout">责任窗口 ≈ <b id="ghor">100 步 = 2.0 s</b></span>
+      </div>
+      <div class="chart" id="gchart"></div>
+    </div>
+    <figcaption>怎么看：曲线是"t 秒后的分数在当下记多少账"。γ=0.99 的窗口正好罩住一次被推倒再站稳的全过程，也够三四个步态周期。往小调到 0.9，窗口只剩 0.2 秒，鸭子会变得只顾眼前这一步；往大调到 0.999，窗口拉到 20 秒，单个动作的功过被整局的噪声淹没。<b>γ 不是玄学超参，它是任务时间尺度的直接换算。</b></figcaption>
+  </figure>
+
+  <h3>最后一块拼图：GAE</h3>
+
+  <p>估计优势 A 有两条路。一条是等一局跑完用实际得分算，准（无偏差）但噪声大；另一条是走一步就用评论家的估值填剩下的，稳（低方差）但评论家不准时会带偏。GAE<span class="en">（Generalized Advantage Estimation, 2015）</span>不选边站，引入一个混合比例 λ，把两条路按指数权重揉在一起。λ=0 全信评论家，λ=1 全信实测，中间连续可调：</p>
+
+  <figure class="fig" style="max-width:1000px">
+    <div class="fighead"><span class="figtag">图 5.2 · 交互</span><span class="figtitle">λ 决定"信实测多一点，还是信评论家多一点"</span></div>
+    <div class="figbody">
+      <div class="figctl">
+        <label>λ = <span class="readout" id="lv">0.95</span><input type="range" id="lslider" min="0" max="100" value="95" aria-label="GAE lambda"></label>
+        <span class="readout">信用衰减半衰期 ≈ <b id="lhalf">11.3 步 = 0.23 s</b></span>
+      </div>
+      <div class="chart" id="lchart"></div>
+    </div>
+    <figcaption>怎么看：柱子是 k 步之外的实测误差在记账里占的权重。本次训练取 λ=0.95，配上 γ=0.99，信用的半衰期是 11 步，约 0.23 秒，差不多正是<b>一次抬脚到落脚</b>的时间。翻译过来，这组参数向算法交代的是："评一个动作，主要看它之后一两次落脚内发生的事。"又一个把物理常识编码进超参数的例子。</figcaption>
+  </figure>
+
+  <details class="fold"><summary>展开：GAE 的公式（两行）</summary><div class="fold-body">
+    <p style="margin-top:12px">先定义单步的"意外"，即时序差分误差<span class="en">（TD error）</span>：走了一步，实际收获比评论家预期的好多少：</p>
+    <div class="formula" style="margin:10px 0"><div class="fx">δ<sub>t</sub> = r<sub>t</sub> + γ·V(o<sub>t+1</sub>) − V(o<sub>t</sub>)</div></div>
+    <p>GAE 就是把未来所有的"意外"按 (γλ) 的幂衰减着加起来：</p>
+    <div class="formula" style="margin:10px 0"><div class="fx">Â<sub>t</sub> = Σ<sub>k≥0</sub> (γλ)<sup>k</sup> · δ<sub>t+k</sub></div><div class="why">λ=0 时只剩 δ_t 一项（全信评论家）；λ=1 时求和恢复成实测总分减 V（全信实测）。图 5.2 画的正是这些权重。</div></div>
+  </div></details>
+
+  <p>到这里，记账体系完工。策略梯度的工作公式变成 ∇J ≈ E[∇log π(a|o) · Â]：每个动作按<em class="zh">它自己那份、去了噪的功劳</em>被加强或削弱。第 1 章的麻烦一、麻烦二都解决了。</p>
+
+  <p class="hook">→ 只剩麻烦三：方向再准，步子迈多大？这个问题毁过无数训练。它的解法有个你肯定听过的名字：<b>PPO。第 6 章。</b></p>
+</div></section>
+
+<hr class="divider">

@@ -1,0 +1,180 @@
+<nav id="topnav" aria-label="章节导航"><div class="bar">
+<a class="chip" href="#hero">序</a>
+<a class="chip" href="#c1">1 问题</a>
+<a class="chip" href="#c2">2 身体</a>
+<a class="chip" href="#c3">3 随机</a>
+<a class="chip" href="#c4">4 挪一点</a>
+<a class="chip" href="#c5">5 记账</a>
+<a class="chip" href="#c6">6 小步</a>
+<a class="chip" href="#c7">7 网络</a>
+<a class="chip" href="#c8">8 奖励</a>
+<a class="chip" href="#c9">9 课程</a>
+<a class="chip" href="#c10">10 分身</a>
+<a class="chip" href="#c11">11 真机</a>
+<a class="chip" href="#c12">12 复盘</a>
+<a class="chip" href="#lit">文献</a>
+<a class="chip" href="#lab">实验</a>
+<div id="navprog"></div>
+</div></nav>
+
+<header id="hero"><div class="wrap">
+  <div class="kicker">MicroDuck-RL · 真实训练记录 · 2026-09-08</div>
+  <h1>一只鸭子如何学会走路</h1>
+  <p class="sub">昨天下午，你的 GPU 上有一只 25 厘米高的仿真鸭子学会了走路。整个过程 112 分钟，没有人写过一行"怎么迈腿"的代码。这份讲义把这 112 分钟拆开，一层一层讲清楚里面发生了什么。所有曲线和数字都来自这次真实的训练，不是教科书里的示意图。</p>
+
+  <div class="frames">
+    <div class="frame"><div class="t">0:00 · 第 0 轮</div><div class="d">出生。14 个关节随机抽动，平均 <b>0.8 秒</b>就摔倒。</div></div>
+    <div class="frame"><div class="t">2:38 · 第 110 轮</div><div class="d">已经很少摔倒了。平均能活 <b>16 秒</b>（满分 20）。学会"不摔"只花了两分半钟。</div></div>
+    <div class="frame"><div class="t">48:00 · 第 2000 轮</div><div class="d">最难的阶段。任务连续加码，得分不升反降。它在<b>追赶不断提高的标准</b>。</div></div>
+    <div class="frame"><div class="t">1:52:04 · 第 5000 轮</div><div class="d">毕业。听指令走、转、站定，动作干净利落，噪声只剩出生时的 <b>1/6</b>。</div></div>
+  </div>
+
+  <div class="statrow">
+    <div class="stat hi"><div class="v num">112<small>分钟</small></div><div class="k">现实世界过去的时间</div></div>
+    <div class="stat hi"><div class="v num">113.8<small>天</small></div><div class="k">鸭子在仿真里经历的时间</div></div>
+    <div class="stat"><div class="v num">4096</div><div class="k">同时练习的分身</div></div>
+    <div class="stat"><div class="v num">4.9<small>亿</small></div><div class="k">总步数</div></div>
+    <div class="stat"><div class="v num">61 → 14</div><div class="k">感官维度 → 动作维度</div></div>
+  </div>
+</div></header>
+
+<hr class="divider">
+
+<!-- ================= 第 1 章 ================= -->
+<section class="sec" id="c1"><div class="wrap">
+  <p class="eyebrow"><span class="idx">第 1 章</span>问题</p>
+  <h2>为什么没法直接编程让它走路</h2>
+
+  <p>先别管什么强化学习。假设这只鸭子交到你手上，让它走起来，你会怎么做？</p>
+
+  <p>最直接的想法是写规则：左腿抬起、向前摆、落下，右腿重复。写几个关节角度的序列，循环播放。你可以试试，结局是它在第一秒就脸朝下摔倒。</p>
+
+  <p>原因值得想清楚。双足行走本质上是<em class="zh">连续的受控跌倒</em>：身体永远在向前倒，腿必须在正确的时机落到正确的位置去接住它。而"正确的位置"取决于此刻的速度、倾角、地面的摩擦、电池的电压、舵机在这个负载下真实输出的力。每个量又受上一刻所有量的影响。这不是一段能写死的脚本，是一个每 20 毫秒都要重新求解的平衡问题。传统机器人学用精密的动力学模型硬算过（本田的 ASIMO 就是这么走的），能走，但是僵硬、怕碰、离不开昂贵的传感器和精确的模型。</p>
+
+  <p>现在换一个角度。"怎么走"我们说不清楚，但"走得好不好"我们一眼就能判断：</p>
+
+  <ul style="line-height:2.1">
+    <li>朝指令的方向、按指令的速度前进 → 好</li>
+    <li>摔倒 → 不好</li>
+    <li>抖动、拖脚、外八字 → 不好</li>
+  </ul>
+
+  <p>这些判断都能写成代码，因为它们只需要<em class="zh">读数</em>：速度差多少、身体歪多少。难写的是行为，好写的是评分。</p>
+
+  <div class="note"><span class="t">整个领域的出发点</span>既然写不出"怎么做"，那就只写"什么算好"，然后让一个搜索过程自己去找高分的做法。这就是强化学习<span class="en">（Reinforcement Learning, RL）</span>。它的骨架只有三句话：<em class="zh">让它试，给它打分，把得分高的行为变得更常出现</em>。</div>
+
+  <p>听起来简单得可疑。确实，想法本身不难，难的全在执行上。马上会遇到三个具体的麻烦：</p>
+
+  <p><b>麻烦一</b>：分数是一局一个总分，但一局有一千步。哪几步立了功，哪几步拖了后腿？<br>
+  <b>麻烦二</b>：知道了功过，往哪个方向调整那几百万个网络参数？<br>
+  <b>麻烦三</b>：调多大步子？调猛了，行为崩了，之后收集的全是垃圾数据。</p>
+
+  <p>第 3 到第 6 章就是这三个麻烦的解法，一次解决一个。RL 的几个著名算法名词（REINFORCE、Actor-Critic、PPO）不过是这条解题链上的三个站点。</p>
+
+  <p class="hook">→ 不过在谈怎么学之前，得先认识学生本身。<b>第 2 章：这只鸭子能感觉到什么，能动什么。</b></p>
+</div></section>
+
+<hr class="divider">
+
+<!-- ================= 第 2 章 ================= -->
+<section class="sec" id="c2"><div class="wrap">
+  <p class="eyebrow"><span class="idx">第 2 章</span>身体</p>
+  <h2>鸭子的感官和身体</h2>
+
+  <p>这只鸭子高 25 厘米、重 800 克，全身 14 个舵机：每条腿 5 个（髋×3、膝、踝），脖子和头 4 个。它的"生活"是一个每秒重复 50 次的循环：</p>
+
+  <figure class="fig" style="max-width:1000px">
+    <div class="fighead"><span class="figtag">图 2.1</span><span class="figtitle">每 20 毫秒转一圈的循环</span></div>
+    <div class="figbody">
+    <svg viewBox="0 0 960 268" role="img" aria-label="决策循环：观测进入策略网络，输出 14 个关节目标角，经执行器和物理引擎得到下一状态和奖励，奖励流向学习器，学习器更新策略">
+      <defs>
+        <marker id="ar" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="currentColor"/></marker>
+        <marker id="arA" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="var(--accent)"/></marker>
+      </defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.3">
+        <rect x="24" y="96" width="150" height="66" rx="3"/>
+        <rect x="242" y="96" width="150" height="66" rx="3"/>
+        <rect x="460" y="96" width="150" height="66" rx="3"/>
+        <rect x="678" y="96" width="150" height="66" rx="3"/>
+        <rect x="352" y="12" width="256" height="44" rx="3" stroke="var(--accent)" stroke-width="1.6"/>
+      </g>
+      <g font-size="13" fill="currentColor" text-anchor="middle" font-weight="600">
+        <text x="99" y="122">感官读数</text>
+        <text x="317" y="122">策略网络 π</text>
+        <text x="535" y="122">舵机</text>
+        <text x="753" y="122">物理世界</text>
+        <text x="480" y="34" fill="var(--accent-text)">学习器</text>
+      </g>
+      <g font-size="11" fill="var(--muted)" text-anchor="middle" font-family="IBM Plex Mono,monospace">
+        <text x="99" y="144">61 个数</text>
+        <text x="317" y="144">它唯一会变的部分</text>
+        <text x="535" y="144">追目标角</text>
+        <text x="753" y="144">20 ms 物理仿真</text>
+        <text x="480" y="50" fill="var(--accent-text)">偶尔醒来，改一次 π 的参数</text>
+      </g>
+      <g stroke="currentColor" stroke-width="1.3" fill="none">
+        <line x1="174" y1="129" x2="238" y2="129" marker-end="url(#ar)"/>
+        <line x1="392" y1="129" x2="456" y2="129" marker-end="url(#ar)"/>
+        <line x1="610" y1="129" x2="674" y2="129" marker-end="url(#ar)"/>
+        <path d="M753 162 L753 222 L99 222 L99 166" marker-end="url(#ar)"/>
+      </g>
+      <g font-size="11.5" fill="var(--muted)" font-family="IBM Plex Mono,monospace">
+        <text x="424" y="120" text-anchor="middle">14 个目标角</text>
+        <text x="426" y="240" text-anchor="middle">新的姿态、新的读数，循环继续</text>
+      </g>
+      <g stroke="var(--accent)" stroke-width="1.5" fill="none">
+        <path d="M700 96 L700 76 L620 34 L612 34" marker-end="url(#arA)"/>
+        <path d="M480 60 L480 84 L340 96" marker-end="url(#arA)" stroke-dasharray="4 4"/>
+      </g>
+      <g font-size="11.5" fill="var(--accent-text)" font-family="IBM Plex Mono,monospace">
+        <text x="712" y="66">每步一个分数 r</text>
+        <text x="410" y="80" text-anchor="end">改好的参数</text>
+      </g>
+    </svg>
+    </div>
+    <figcaption>怎么看这张图：黑色的圈是<b>生活</b>，50 Hz 不停转；橙色的路径是<b>学习</b>，把分数送给学习器、把改好的参数送回来。两条回路的节奏差别很大：鸭子每走 24 步，学习器才醒来改一次参数。先记住这个分工，第 6 章会给出它的完整时刻表。</figcaption>
+  </figure>
+
+  <p>循环里有两个数字值得展开：进去的 61 个数，出来的 14 个数。</p>
+
+  <p><b>出来的 14 个数</b>好理解：每个舵机一个目标角度。注意策略输出的不是力，而是"你去到这个角度"，追赶的过程交给舵机自己。这层间接性让学习容易了不少，因为目标角错一点，后果通常只是姿势难看，而力错一点就是当场跌倒。</p>
+
+  <p><b>进去的 61 个数</b>是它感官的全部。点开下图的每一段看看它们是什么。看的时候留意一件事：<em class="zh">里面没有速度计，没有位置，没有摄像头</em>。这只鸭子不知道自己走多快，也不知道自己在哪，它靠"内耳"（IMU 惯性传感器）和关节的感觉走路。相当于闭着眼、凭平衡感行走。</p>
+
+  <figure class="fig" style="max-width:1000px">
+    <div class="fighead"><span class="figtag">图 2.2 · 点击探索</span><span class="figtitle">61 个数分别从身体的哪里来</span></div>
+    <div class="figbody">
+      <div id="obsbar" role="tablist" aria-label="观测分段"></div>
+      <div class="duckgrid">
+        <div class="duckstage" id="duckstage">
+          <img id="duckimg" alt="MuJoCo 中渲染的 microduck，站立姿态">
+          <svg class="ov" id="duckov" viewBox="0 0 1280 960" aria-hidden="true"></svg>
+          <div class="dimmer" id="duckdim" hidden><div class="badge" id="duckbadge"></div></div>
+          <div class="duckcap" id="duckcap"></div>
+        </div>
+        <div id="obsdetail" aria-live="polite"></div>
+      </div>
+    </div>
+    <figcaption>左图是仿真器里的鸭子本尊（MuJoCo 渲染，<code class="inline">scene_walk.xml</code> 的站立姿态）。点关节相关的段落会切到<b>透视模式</b>：外壳变半透明，蓝色箭头是 14 根转轴的方向，圆点上的编号就是该关节在 61 维向量里的次序；躯干里那个蓝色盒子是真实的电池仓。这个 61 维的顺序是一条<b>永不改动的契约</b>：走路、爬起、踢球等所有策略共用同一格式，机器人运行时才能随时切换。有些段落带噪声和延迟，那是故意的，第 11 章讲为什么。</figcaption>
+  </figure>
+
+  <div class="note"><span class="t">想转着圈看它？</span>训练栈自带一个网页版 3D 查看器（viser）。在这台机器上跑一条命令，浏览器打开 8080 端口，就能拖动视角看训练好的策略实时走路：<code class="inline">uv run play Mjlab-Velocity-Flat-MicroDuck --checkpoint-file logs/rsl_rl/velocity/2026-09-08_15-13-23_walk_v1/model_4999.pt --num-envs 1 --viewer viser</code></div>
+
+  <h3>本章的词汇表</h3>
+  <p>后面各章会反复用到五个词。它们都有严格的数学定义，但先用鸭子的话记住就够了：</p>
+
+  <div class="tblwrap"><table class="tb">
+    <tr><th>术语</th><th>英文</th><th>对这只鸭子来说就是</th></tr>
+    <tr><td><b>观测</b></td><td class="num">observation, o</td><td>那 61 个数。它对世界的全部了解。</td></tr>
+    <tr><td><b>动作</b></td><td class="num">action, a</td><td>那 14 个目标角。它对世界的全部影响。</td></tr>
+    <tr><td><b>策略</b></td><td class="num">policy, π</td><td>从观测到动作的映射。就是那个神经网络，学习改的就是它。</td></tr>
+    <tr><td><b>奖励</b></td><td class="num">reward, r</td><td>每走一步得到的分数。由 16 条评分规则加总（第 8 章逐条讲）。</td></tr>
+    <tr><td><b>回合</b></td><td class="num">episode, 一局</td><td>从出生（或摔倒重置）到结束的一段经历。上限 20 秒，即 1000 步。</td></tr>
+  </table></div>
+
+  <p class="small">这套"观测→动作→奖励"的循环结构，教科书里叫马尔可夫决策过程<span class="en">（MDP）</span>。名字记住即可，这份讲义里用不到它的形式化定义。</p>
+
+  <p class="hook">→ 认识了身体，回到序章那一幕：第 0 轮的鸭子为什么在抽搐？因为它的第一个策略是<b>纯随机</b>的。而随机，恰恰是一切的起点。<b>第 3 章。</b></p>
+</div></section>
+
+<hr class="divider">

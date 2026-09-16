@@ -1,0 +1,218 @@
+<!-- ================= 第 10 章 ================= -->
+<section class="sec" id="c10"><div class="wrap">
+  <p class="eyebrow"><span class="idx">第 10 章</span>规模</p>
+  <h2>4096 只鸭子同时练</h2>
+
+  <p>第 6 章末尾留了一笔账：每 1.44 秒就要吃掉 98,304 条<em class="zh">新鲜</em>经历，用完即弃。整场训练 4.9 亿步。如果让一只真实的鸭子以真实时间去积累这些经历，需要不吃不睡走 113.8 天，外加几十万次摔倒。同策略算法就是这么能吃，这决定了现代机器人 RL 的形态：<strong>把物理仿真搬进 GPU</strong>。</p>
+
+  <p>思路说破不值钱：4096 个世界各自走一步物理，本质上是一次大批量的张量运算，而 GPU 就是为这种运算生的。2021 年 Isaac Gym 第一次证明"几千个环境塞进一张卡，几分钟训会四足机器人"是可行的，此后这条路线迭代了三代，本仓库用的是最新一代 MuJoCo Warp：物理状态直接躺在显存里，跟 PyTorch 零拷贝互通，数据从"生活"到"学习"不过内存搬运。</p>
+
+  <p>你这次训练的实测账本：</p>
+
+  <div class="tblwrap"><table class="tb">
+    <tr><th>项目</th><th>实测</th><th>换句话说</th></tr>
+    <tr><td>吞吐</td><td class="num">6.7 万–7.4 万 步/秒</td><td>1462 倍于真实时间。一张 145 瓦的显卡（不到一台微波炉），供 4096 只鸭子生活。</td></tr>
+    <tr><td>时间分配</td><td class="num">采集 1.36 s ： 学习 0.084 s</td><td>16 比 1。<em class="zh">经历贵，反思便宜。</em>想再快，该优化的是仿真器，不是网络。</td></tr>
+    <tr><td>显存</td><td class="num">5.2 / 24 GB</td><td>卡的是算力不是容量，还有大把余量可以加环境数。</td></tr>
+    <tr><td>隐藏红利</td><td class="num">4096 路独立探索</td><td>梯度对 4096 份经历取平均，第 5 章拼命降的方差，硬件又帮着降了一轮。而且每个分身的世界参数各不相同，这是第 11 章的伏笔。</td></tr>
+  </table></div>
+
+  <p>软件栈的分层也值得记一眼，出问题时好知道去哪层找：<span class="pill">MuJoCo Warp</span> 管物理 → <span class="pill">mjlab</span> 管任务装配（观测、奖励、课程都是它的配置项，第 8、9 章的一切都写在这层）→ <span class="pill">rsl_rl</span> 管 PPO（第 6 章）→ <span class="pill">ONNX</span> 负责出厂。你调研报告里判断的"生态正从 MJX 向 Warp 迁移"，落到代码上就是这套组合。</p>
+
+  <p class="hook">→ 4096 个世界还藏着一件事没说：它们被<b>故意造得各不相同</b>。为什么？因为终点从来不是仿真。<b>第 11 章：给真实世界打预防针。</b></p>
+</div></section>
+
+<hr class="divider">
+
+<!-- ================= 第 11 章 ================= -->
+<section class="sec" id="c11"><div class="wrap">
+  <p class="eyebrow"><span class="idx">第 11 章</span>终点</p>
+  <h2>给真实世界打预防针</h2>
+
+  <p>仿真里练成的策略搬上真机，中间隔着一道著名的坎：<strong>仿真与现实的差距</strong><span class="en">（sim-to-real gap）</span>。对这只 800 克的小机器人，差距最大的一块不是重力也不是碰撞，而是<em class="zh">舵机</em>。仓库文档说得直白：在这个尺度上，执行器的保真度就是差距的主体。应对分两手。</p>
+
+  <h3>第一手：把仿真做真</h3>
+
+  <p>教科书式的仿真把舵机当理想伺服：给个目标角，输出标准的追踪力。真实的舵机是一颗有脾气的小电机：固件把角度误差换算成<em class="zh">电压</em>；转速越高反电动势越强，出力越小；低速时有黏滞摩擦，负载一变摩擦也变。法国 Rhoban 实验室把这些脾气在测功机上逐一测出来，做成了可以塞进仿真的模型（BAM）。这个仓库的每一步物理都跑着它。策略从出生起面对的就是真实电机的脾气，而不是它的理想化画像。</p>
+
+  <h3>第二手：让策略对剩下的差距免疫</h3>
+
+  <p>建模再细也有残差，何况每一只出厂的鸭子都略有不同。既然拿不准真实参数是多少，那就<em class="zh">让 4096 个分身每回合各抽一套参数</em>：这只重心偏左 3 毫米，那只脚底更滑，另一只的电池快没电了。想在所有世界里都及格，策略只能学出对参数不敏感的走法。真机不过是又一个抽样。这一手叫<strong>域随机化</strong><span class="en">（domain randomization）</span>，下表是这次训练的完整清单，全部来自配置源码：</p>
+
+  <div class="tblwrap"><table class="tb">
+    <tr><th>类别</th><th>随机什么</th><th>幅度</th><th>对应真机的什么</th></tr>
+    <tr><td rowspan="4">身体</td><td>躯干/头部质心</td><td class="num">±3→15 mm / ±3→10 mm（按课程爬）</td><td>装配差异、电池位置、线束</td></tr>
+    <tr><td>质量与惯量</td><td class="num">×[0.95, 1.05]</td><td>打印件密度、称重误差</td></tr>
+    <tr><td>关节摩擦</td><td class="num">×[0.9, 1.1]</td><td>齿轮批次、温度、磨合程度</td></tr>
+    <tr><td>转子惯量 / 脚底摩擦</td><td class="num">×[0.9, 1.1] / [0.7, 1.3]</td><td>电机个体差异 / 地板材质</td></tr>
+    <tr><td rowspan="4">感官</td><td>陀螺仪、重力读数噪声</td><td class="num">±0.03 / ±0.01</td><td>IMU 的噪声底</td></tr>
+    <tr><td>IMU 延迟、关节速度滞后</td><td class="num">0–1 步 / 固定 1 步（20 ms）</td><td>总线延迟；舵机固件的速度读数本来就是滑动平均</td></tr>
+    <tr><td>编码器零位偏置</td><td class="num">±0.86°（每回合抽定）</td><td>标定残差</td></tr>
+    <tr><td>IMU 安装角误差</td><td class="num">随机轴 ≤6°</td><td>传感器焊装的歪斜</td></tr>
+    <tr><td>外力</td><td>随机推搡</td><td class="num">±0.3 m/s，每 3–6 秒</td><td>碰撞、牵拉、地毯边缘</td></tr>
+    <tr><td>电气</td><td>电池电压、负载压降</td><td class="num">在舵机模型内随机</td><td>电量衰减、瞬时大电流</td></tr>
+  </table></div>
+
+  <p>注意一个第 5 章埋下的呼应：感官类的腐蚀<em class="zh">只喂给演员</em>，评论家永远看真值。学生在雾里练，裁判在雾外记账。</p>
+
+  <p>还有一位预备役选手这次没上场：<strong>齿隙</strong><span class="en">（backlash）</span>。廉价舵机的齿轮之间有大约 ±1° 的空转间隙，仓库为它准备了专门的任务变体（给每个关节串一个自由晃动的小铰链，连编码器读数都按真机方式从间隙的另一侧读）。它是附录二里你的第一个实验。</p>
+
+  <h3>出厂手续</h3>
+
+  <figure class="fig" style="max-width:1000px">
+    <div class="fighead"><span class="figtag">图 11.1</span><span class="figtitle">从 4096 个世界到一只真鸭</span></div>
+    <div class="figbody">
+    <svg viewBox="0 0 960 170" role="img" aria-label="部署流程：训练检查点经导出脚本烘焙归一化生成 ONNX，通过形状与数值检查，由 50 Hz 运行时加载，多个策略共用 61 维契约随时切换">
+      <defs><marker id="ar4" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="currentColor"/></marker></defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.3">
+        <rect x="20" y="34" width="170" height="72" rx="3"/>
+        <rect x="262" y="34" width="200" height="72" rx="3" stroke="var(--accent)" stroke-width="1.6"/>
+        <rect x="534" y="34" width="170" height="72" rx="3"/>
+        <rect x="776" y="34" width="164" height="72" rx="3"/>
+      </g>
+      <g font-size="12.5" font-weight="600" fill="currentColor" text-anchor="middle">
+        <text x="105" y="60">model_4999.pt</text>
+        <text x="362" y="60" fill="var(--accent-text)">export.py</text>
+        <text x="619" y="60">policy.onnx</text>
+        <text x="858" y="60">真机运行时</text>
+      </g>
+      <g font-size="10.5" fill="var(--muted)" text-anchor="middle" font-family="IBM Plex Mono,monospace">
+        <text x="105" y="80">演员 + 归一化统计</text>
+        <text x="105" y="94">评论家就此退休</text>
+        <text x="362" y="80">归一化烘进计算图</text>
+        <text x="362" y="94">唯一合法的出口</text>
+        <text x="619" y="80">[1,61] → [1,14]</text>
+        <text x="619" y="94">NaN、恒定输出直接拒收</text>
+        <text x="858" y="80">50 Hz 推理</text>
+        <text x="858" y="94">走/站/特技随时切换</text>
+      </g>
+      <g stroke="currentColor" stroke-width="1.3" fill="none">
+        <line x1="190" y1="70" x2="258" y2="70" marker-end="url(#ar4)"/>
+        <line x1="462" y1="70" x2="530" y2="70" marker-end="url(#ar4)"/>
+        <line x1="704" y1="70" x2="772" y2="70" marker-end="url(#ar4)"/>
+      </g>
+      <text x="480" y="146" font-size="11.5" fill="var(--muted)" text-anchor="middle" font-family="IBM Plex Mono,monospace">贯穿一切的还是那条 61 维契约。第 2 章那根彩条，到这里走完了全程</text>
+    </svg>
+    </div>
+    <figcaption>再补一条反向的纪律：<b>训练时的动作不加滤波，部署时也不加</b>。想要平滑，只能靠抖动罚款去教（第 8、9 章）。如果仿真里加了滤波真机没加（或反过来），策略和执行器之间的默契就被换掉了，迁移直接作废。平滑必须长在策略身上，不能靠事后修图。</figcaption>
+  </figure>
+
+  <p class="hook">→ 全部原理讲完了。最后一件事：带着这些新眼光，<b>回去重放那 112 分钟</b>，这次你能看懂每一条曲线在说什么。</p>
+</div></section>
+
+<hr class="divider">
+
+<!-- ================= 第 12 章 ================= -->
+<section class="sec" id="c12"><div class="wrap">
+  <p class="eyebrow"><span class="idx">第 12 章</span>复盘</p>
+  <h2>重放这 112 分钟</h2>
+
+  <p>先用一张时刻表把整场训练串起来。左边是墙上的钟，右边是当时发生的事，全部数字来自日志：</p>
+
+  <div class="tl">
+    <div class="row"><span class="w">0:00</span><span class="it">第 0 轮</span><span class="d">σ=1.0，纯探索。平均活 0.8 秒。得分 1.2。</span></div>
+    <div class="row"><span class="w">1:12</span><span class="it">第 50 轮</span><span class="d">能活 2.8 秒了。最早学会的是"膝盖别软"。</span></div>
+    <div class="row"><span class="w">2:38</span><span class="it">第 110 轮</span><span class="d">平均活 16 秒，摔倒从主要死因变成偶发事件。<b>"别摔倒"这门课两分半钟就毕业了</b>，比多数人预期的快得多。</span></div>
+    <div class="row"><span class="w">7:12</span><span class="it">第 300 轮</span><span class="d">得分 100，速度追踪像模像样。课程开始悄悄加码。</span></div>
+    <div class="row"><span class="w">18:00</span><span class="it">第 750 轮</span><span class="d">进入最艰难的阶段：抖动罚款连跳、头部指令放宽、站立要求上调，三面夹击。得分从 110 一带开始横盘回落。</span></div>
+    <div class="row"><span class="w">48:00</span><span class="it">第 2000 轮</span><span class="d">课程全部到顶。得分探底 112，σ 已收到 0.19。考卷不再变难，反攻开始。</span></div>
+    <div class="row"><span class="w">1:52:04</span><span class="it">第 5000 轮</span><span class="d">毕业：得分 119，平均活 19.2 秒（93% 的回合自然到点），σ=0.177。全程零次数值故障。</span></div>
+  </div>
+
+  <p>然后亲手翻数据。下面四组视图覆盖了训练日志的全部 37 条曲线，悬停任何位置都能读数，竖虚线是课程加压的时刻：</p>
+
+  <figure class="fig" style="max-width:1000px">
+    <div class="fighead"><span class="figtag">图 12.1 · 交互</span><span class="figtitle">四种读法</span></div>
+    <div class="figbody">
+      <div class="storytabs" id="storytabs">
+        <button class="bt" data-story="main" aria-pressed="true">① 主线：学会活着</button>
+        <button class="bt" data-story="conv" aria-pressed="false">② 收敛的三重证据</button>
+        <button class="bt" data-story="track" aria-pressed="false">③ 短板：直行与转向</button>
+        <button class="bt" data-story="free" aria-pressed="false">④ 自由浏览 37 条</button>
+      </div>
+      <div id="storyfree" style="display:none;padding:0 0 10px"><select id="freesel" style="font:12.5px 'IBM Plex Mono',monospace;padding:6px 10px;background:var(--surface2);color:var(--ink);border:1px solid var(--line2);border-radius:6px;max-width:100%"></select></div>
+      <div id="storyarea"></div>
+      <div id="storynote" class="small" style="padding-top:6px"></div>
+    </div>
+    <figcaption>一个通用的读曲线心法：<b>单独看一条曲线几乎总会误诊。</b>得分回落？先查课程表（读法①对照第 9 章）。得分在涨？先看回合长度有没有跟着涨，不涨就可能是钻了空子。说"收敛了"？要 σ、熵、学习率三条互相印证（读法②）。曲线是证词，孤证不立。</figcaption>
+  </figure>
+
+  <h3>病历卡：四种典型的失败长相</h3>
+  <p>这次训练很干净，但值得预先认识曲线语言里的典型病征，将来自己的实验出问题时能快速对号：</p>
+  <div class="tblwrap"><table class="tb">
+    <tr><th>病征</th><th>长相</th><th>这个仓库的防线</th></tr>
+    <tr><td><b>数值故障蔓延</b></td><td>物理引擎偶发 NaN，钻进观测再钻进权重，几分钟毁掉整场训练</td><td>专设的检测项当步隔离重置出事的分身。本次零触发。守门员的价值不看扑救次数。</td></tr>
+    <tr><td><b>熵坍缩</b></td><td>σ 断崖下跌，同时某个给分项归零：策略放弃了某种行为，缩进保守解</td><td>事故一就是完整病例。熵奖励能延缓，救不了定价错误，病根永远在评分表。</td></tr>
+    <tr><td><b>钻空子</b></td><td>总分在涨，任务指标在跌，或者回放视频里出现"聪明的怪动作"</td><td>16 项分账日志（图 8.1 每项都有全程曲线）。总分会骗人，分账不会。</td></tr>
+    <tr><td><b>课程误诊</b></td><td>加压期的正常回落被当成退化，回滚了一场健康的训练</td><td>把课程画进曲线（图 9.1）；评估固定用满难度进行。</td></tr>
+  </table></div>
+
+  <p>最后留一个真实的悬念。读法③里能看到：直行误差稳定在 0.42 m/s 附近，转向误差却在 1.0 rad/s 上下，是明显的短板。为什么转向学得差？是转身数据占比还不够？转向容差给得太松？还是脚底摩擦的随机化压制了旋转？这不是修辞性提问，是真没有定论的问题。附录二的实验四就从这里下手。</p>
+
+  <p class="hook">→ 讲义正文到此为止。两个附录：<b>一份带路线的书单，四个动手实验。</b></p>
+</div></section>
+
+<hr class="divider">
+
+<!-- ================= 附录一 文献 ================= -->
+<section class="sec" id="lit"><div class="wrap">
+  <p class="eyebrow"><span class="idx">附录一</span>书单</p>
+  <h2>从哪儿读起</h2>
+  <p>按"对这只鸭子的直接贡献"排序。每一篇都能在正文里找到它的位置，建议读的时候带着对应章节的问题去：</p>
+
+  <div class="lineage-list">
+    <div class="lin"><div class="yr num">1992</div><div><div class="t">Williams：REINFORCE</div><div class="d">第 4 章那四步推导的出处。此后三十年的策略梯度研究，都是在给这个公式降噪、加稳。</div></div></div>
+    <div class="lin"><div class="yr num">2015</div><div><div class="t">Schulman 等：TRPO 与 GAE <span class="pill">arXiv:1502.05477 / 1506.02438</span></div><div class="d">第 5 章的 λ 和第 6 章"限制步长"思想的源头。GAE 那两行公式至今原样躺在 rsl_rl 里。</div></div></div>
+    <div class="lin"><div class="yr num">2017</div><div><div class="t">Schulman 等：PPO <span class="pill">arXiv:1707.06347</span></div><div class="d">第 6 章的主角。用一个 min 加一个 clip 取代整套二阶优化，从此"一张卡上写得对"成了算法的美德。</div></div></div>
+    <div class="lin"><div class="yr num">2018–21</div><div><div class="t">Peng 等：DeepMimic / AMP <span class="pill">arXiv:1804.02717 / 2104.02180</span></div><div class="d">另一条路线：不手写 16 项评分，改成"像参考动作就给分"。Open Duck 的 MJX 主线走的是这条路，和本仓库互为对照实验。</div></div></div>
+    <div class="lin"><div class="yr num">2021</div><div><div class="t">Rudin 等：大规模并行腿足训练 <span class="pill">arXiv:2109.11978</span></div><div class="d">第 10 章那条路线的开山之作，rsl_rl 这个库本身也出自这里。这次训练的直系祖先。</div></div></div>
+    <div class="lin"><div class="yr num">2023</div><div><div class="t">Disney Research：BDX 双足角色</div><div class="d">这只鸭子的精神源头：小型、可爱、会表演的双足机器人，用 RL 学步态，头颈留给表演。</div></div></div>
+    <div class="lin"><div class="yr num">2024–25</div><div><div class="t">Duclusaud 等：BAM 执行器建模 <span class="pill">arXiv:2410.08650</span></div><div class="d">第 11 章"把仿真做真"的那一手。廉价舵机的电压、摩擦、反电动势全套辨识，小机器人过坎的胜负手。</div></div></div>
+    <div class="lin"><div class="yr num">2025–26</div><div><div class="t">Zakka 等：MuJoCo Playground / mjlab <span class="pill">arXiv:2502.08844 / 2601.22074</span></div><div class="d">第 10 章的软件栈。你调研报告里那条"生态迁移"的判断，就是这两篇之间的箭头。</div></div></div>
+    <div class="lin"><div class="yr num">经典</div><div><div class="t">Sutton &amp; Barto：Reinforcement Learning: An Introduction（第二版）</div><div class="d">想把直觉换成定理时再读。建议倒着用：先有这 112 分钟的亲身经历，再翻它，会处处读出"原来如此"。</div></div></div>
+  </div>
+</div></section>
+
+<hr class="divider">
+
+<!-- ================= 附录二 实验 ================= -->
+<section class="sec" id="lab"><div class="wrap">
+  <p class="eyebrow"><span class="idx">附录二</span>动手</p>
+  <h2>四个亲手做的实验</h2>
+  <p>理解的最后一关是预测。每个实验开跑之前，先写下你预期的曲线形状，跑完对账。GPU 1 一直空着，可以和主卡并行：</p>
+
+  <div class="exps">
+    <div class="exp"><div class="n">实验一 · 约 2 小时（GPU 1）</div><div class="t">齿隙对照：给每个关节加 ±1° 空隙</div>
+      <p>同一个任务的 Backlash 变体（第 11 章的预备役）。先预测：步频、抬脚高度、σ 会怎么变？跑完和这次的曲线并排对比。</p>
+      <pre>CUDA_VISIBLE_DEVICES=1 uv run train \
+  Mjlab-Velocity-Flat-Backlash-MicroDuck \
+  --env.scene.num-envs 4096 \
+  --agent.max-iterations 5000 \
+  --agent.logger tensorboard \
+  --agent.run-name backlash_v1</pre></div>
+    <div class="exp"><div class="n">实验二 · 约 1 小时</div><div class="t">拆掉平滑税，亲眼看后果</div>
+      <p>把抖动罚款的课程钉死在 −0.1（第 9 章表格第一行）。预测 mean_action_acc 曲线和最终步态的样子。这是"奖励在给真机打预防针"的最直接演示。</p>
+      <pre># microduck_velocity_env_cfg.py
+# curriculum["action_rate_weight"]
+# 只保留 {"step": 0, "weight": -0.1}</pre></div>
+    <div class="exp"><div class="n">实验三 · 约 2 小时</div><div class="t">换一门课：从地上爬起来</div>
+      <p>StandUp 任务是另一种评分范式（分阶段、姿态主导）。训完把它的评分表和第 8 章那 16 项对照，找出两套"语法"的异同。</p>
+      <pre>CUDA_VISIBLE_DEVICES=2 uv run train \
+  Mjlab-StandUp-Flat-MicroDuck \
+  --env.scene.num-envs 4096 \
+  --agent.logger tensorboard</pre></div>
+    <div class="exp"><div class="n">实验四 · 约 30 分钟起</div><div class="t">追查转向短板</div>
+      <p>第 12 章末尾那个悬念。三个候选假设：原地转身的数据占比不足？转向容差太松？摩擦随机化压制了旋转？先设计能区分它们的实验，再动手改参数。</p>
+      <pre>uv run tensorboard --logdir logs/rsl_rl
+# 看 error_vel_yaw 分速度段的统计
+# 再决定改 TURN_IN_PLACE_FRACTION 还是 std</pre></div>
+  </div>
+
+  <p class="small">复现本页图表：数据在 <code class="inline">logs/tb_walk_v1.json</code>（由 tensorboard 事件文件降采样而来）；每条公式都能在 <code class="inline">src/mjlab_microduck/tasks/</code> 和 mjlab、rsl_rl 源码里逐行对上。</p>
+</div></section>
+
+<div class="colophon">
+  数据来源 · run 2026-09-08_15-13-23_walk_v1 · Mjlab-Velocity-Flat-MicroDuck · 5000 轮 / 4.9×10⁸ 步<br>
+  上游 pollen-robotics/microduck_rl@2b581c6 · mjlab 1.3.0 · rsl_rl · MuJoCo Warp 1.12 · RTX PRO 4000 Blackwell<br>
+  《一只鸭子如何学会走路》 · 为 Harry 的 RL 学习之路而作 · 2026-09-08
+</div>

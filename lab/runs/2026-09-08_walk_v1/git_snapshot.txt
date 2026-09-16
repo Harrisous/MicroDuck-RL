@@ -1,0 +1,13 @@
+--- git commit ---
+2b581c641406a48346e696212930ea881c222c52
+
+
+--- git status ---
+On branch main
+Your branch is based on 'origin/main', but the upstream is gone.
+  (use "git branch --unset-upstream" to fixup)
+
+nothing to commit, working tree clean 
+
+
+--- git diff ---

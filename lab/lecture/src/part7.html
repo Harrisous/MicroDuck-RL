@@ -1,0 +1,422 @@
+<script>
+"use strict";
+/* ================= 基础工具 ================= */
+const $=s=>document.querySelector(s), $$=s=>document.querySelectorAll(s);
+const css=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const COL=()=>({c1:css('--c1'),c2:css('--c2'),c3:css('--c3'),c4:css('--c4'),ac:css('--accent'),acT:css('--accent-text'),ink:css('--ink'),mut:css('--muted'),ok:css('--ok'),err:css('--err')});
+const S=t=>(typeof TB!=='undefined'&&TB[t])||[];
+const last=(t,n=25)=>{const s=S(t);if(!s.length)return 0;const k=s.slice(-n);return k.reduce((a,p)=>a+p[1],0)/k.length;};
+const fmt=v=>{const a=Math.abs(v);if(a===0)return'0';if(a>=1000)return v.toFixed(0);if(a>=100)return v.toFixed(1);if(a>=1)return v.toFixed(2);if(a>=0.01)return v.toFixed(3);return v.toExponential(1);};
+const REG=[];const reg=fn=>{REG.push(fn);fn();};
+matchMedia('(prefers-color-scheme: dark)').addEventListener('change',()=>REG.forEach(f=>f()));
+
+/* ================= 折线图引擎 ================= */
+function niceTicks(lo,hi,n=4){
+  if(lo===hi){lo-=1;hi+=1}
+  const span=hi-lo,step0=span/n,mag=Math.pow(10,Math.floor(Math.log10(step0)));
+  const norm=step0/mag;const step=(norm<1.5?1:norm<3.5?2:norm<7.5?5:10)*mag;
+  const t=[];for(let v=Math.ceil(lo/step)*step;v<=hi+1e-9;v+=step)t.push(v);
+  return t;
+}
+function mkLine(el,cfg){
+  const W=940,H=cfg.h||200,L=60,R=16,T=12,B=26,pw=W-L-R,ph=H-T-B;
+  const xmax=cfg.xmax||5000;
+  let ymin=Infinity,ymax=-Infinity;
+  cfg.series.forEach(s=>s.pts.forEach(p=>{if(p[1]<ymin)ymin=p[1];if(p[1]>ymax)ymax=p[1]}));
+  if(cfg.yzero){ymin=Math.min(ymin,0);ymax=Math.max(ymax,0)}
+  if(!isFinite(ymin)){ymin=0;ymax=1}
+  let toY;let ticks;
+  if(cfg.ylog){
+    const la=Math.log10(Math.max(ymin,1e-12)),lb=Math.log10(ymax);
+    const pad=(lb-la)*0.08||0.1;const lo=la-pad,hi=lb+pad;
+    toY=v=>T+ph-(Math.log10(v)-lo)/(hi-lo)*ph;
+    ticks=[];for(let e=Math.ceil(lo);e<=Math.floor(hi);e++){ticks.push(Math.pow(10,e));const m=2*Math.pow(10,e);if(Math.log10(m)<hi)ticks.push(m);const f=5*Math.pow(10,e);if(Math.log10(f)<hi)ticks.push(f);}
+  }else{
+    const pad=(ymax-ymin)*0.07||1;ymin-=pad;ymax+=pad;
+    toY=v=>T+ph-(v-ymin)/(ymax-ymin)*ph;
+    ticks=niceTicks(ymin,ymax,4);
+  }
+  const toX=v=>L+v/xmax*pw;
+  let g='';
+  ticks.forEach(t=>{const y=toY(t);if(y<T-1||y>T+ph+1)return;
+    g+=`<line class="grid" x1="${L}" x2="${W-R}" y1="${y}" y2="${y}"/><text class="axis" x="${L-8}" y="${y+4}" text-anchor="end">${fmt(t)}</text>`;});
+  [0,1000,2000,3000,4000,5000].forEach(x=>{if(x>xmax)return;
+    g+=`<text class="xlab" x="${toX(x)}" y="${H-6}" text-anchor="middle">${x}</text>`;});
+  (cfg.events||[]).forEach(e=>{const x=toX(e);
+    g+=`<line class="evline" x1="${x}" x2="${x}" y1="${T}" y2="${T+ph}"/>`;});
+  if(cfg.events&&cfg.events.length&&cfg.evlabel!==false)
+    g+=`<text class="evtext" x="${toX(cfg.events[0])+4}" y="${T+10}">课程加压 ↓</text>`;
+  let paths='',labels='';
+  cfg.series.forEach(s=>{
+    if(!s.pts.length)return;
+    let d='';s.pts.forEach((p,i)=>{d+=(i?'L':'M')+toX(p[0]).toFixed(1)+' '+toY(p[1]).toFixed(1)+' '});
+    paths+=`<path d="${d}" fill="none" stroke="${s.color}" stroke-width="2" stroke-linejoin="round"/>`;
+    const lp=s.pts[s.pts.length-1];
+    labels+=`<text class="slabel" x="${Math.min(toX(lp[0])+6,W-R-4)}" y="${Math.max(T+10,Math.min(toY(lp[1])+4,T+ph-2))}" fill="${s.color}" text-anchor="${toX(lp[0])>W-140?'end':'start'}">${s.name}</text>`;
+  });
+  const unit=cfg.unit?`<text class="axis" x="${L}" y="${T-1}" text-anchor="start">${cfg.unit}</text>`:'';
+  el.innerHTML=`<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${cfg.aria||cfg.series.map(s=>s.name).join('、')+' 随训练轮数变化的曲线'}">
+    ${g}${unit}${paths}${cfg.nolabel?'':labels}
+    <line id="cx" x1="0" x2="0" y1="${T}" y2="${T+ph}" stroke="var(--line2)" style="display:none"/>
+    ${cfg.series.map((s,i)=>`<circle id="cd${i}" r="3.5" fill="${s.color}" style="display:none"/>`).join('')}
+    <rect x="${L}" y="${T}" width="${pw}" height="${ph}" fill="transparent" style="cursor:crosshair"/>
+  </svg><div class="ttip"></div>`;
+  const svg=el.querySelector('svg'),tip=el.querySelector('.ttip'),
+        cx=svg.querySelector('#cx'),ov=svg.querySelector('rect[fill="transparent"]');
+  const dots=cfg.series.map((_,i)=>svg.querySelector('#cd'+i));
+  ov.addEventListener('mousemove',ev=>{
+    const r=svg.getBoundingClientRect();
+    const xv=((ev.clientX-r.left)/r.width*W-L)/pw*xmax;
+    let html=`<div class="tt-x">第 ${Math.round(xv)} 轮</div>`;let px=toX(xv);
+    cfg.series.forEach((s,i)=>{
+      if(!s.pts.length)return;
+      let best=s.pts[0];for(const p of s.pts){if(Math.abs(p[0]-xv)<Math.abs(best[0]-xv))best=p}
+      html+=`<div class="row"><span class="sw" style="background:${s.color}"></span>${s.name} <b>${fmt(best[1])}</b></div>`;
+      dots[i].style.display='';dots[i].setAttribute('cx',toX(best[0]));dots[i].setAttribute('cy',toY(best[1]));
+    });
+    cx.style.display='';cx.setAttribute('x1',px);cx.setAttribute('x2',px);
+    tip.style.display='block';tip.innerHTML=html;
+    const tr=tip.getBoundingClientRect();
+    let lx=(ev.clientX-r.left)+14;if(lx+tr.width>r.width-8)lx=(ev.clientX-r.left)-tr.width-14;
+    tip.style.left=lx+'px';tip.style.top=Math.max(4,(ev.clientY-r.top)-tr.height-10)+'px';
+  });
+  ov.addEventListener('mouseleave',()=>{tip.style.display='none';cx.style.display='none';dots.forEach(d=>d.style.display='none')});
+}
+const EV=[500,750,1000,1250,1500,2000];
+
+/* ================= 图 2.2 观测解剖 ================= */
+(function(){
+  const segs=[
+    {n:'gyro',d:3,ci:'c2',t:'机体角速度（陀螺仪）',b:'IMU 陀螺仪的三轴读数，单位 rad/s。演员读到的版本被动过手脚：加了 ±0.03 的噪声、0 到 20 毫秒的随机延迟，还有每回合抽一次的"安装歪斜"（把读数整体旋转至多 6°）。真机传感器有的毛病，训练里都提前有（第 11 章）。'},
+    {n:'gravity',d:3,ci:'c4',t:'投影重力',b:'重力方向在机体坐标系里的投影，直白地说就是"哪边是下"。身体的倾斜信息全在这 3 个数里（歪多少、往哪歪）。第 8 章的直立奖励罚的正是它的水平分量。'},
+    {n:'joint_pos',d:14,ci:'c1',t:'关节角（编码器）',b:'14 个舵机的当前角度，相对默认姿态。演员读到的版本带一个每回合抽定的 ±0.86° 零位偏差，模拟真机标定的残差；评论家读的是无偏真值（第 5 章的非对称设计）。'},
+    {n:'joint_vel',d:14,ci:'c1',op:.55,t:'关节角速度',b:'固定滞后一个控制周期（20 毫秒）。这不是拍脑袋：真实舵机固件报出的速度本来就是上一个窗口的滑动平均。仿真如实照搬，策略就不会养成依赖"瞬时速度"的习惯，因为真机上没有这种东西。'},
+    {n:'last_action',d:14,ci:'c3',t:'上一帧动作',b:'策略自己上一步的输出。作用有两个：给没有记忆的网络一份最起码的"我刚做了什么"；让抖动罚款的对象出现在观测里，策略能感知并管理自己的平滑度。'},
+    {n:'commands',d:13,ci:'mut',t:'指令块 [twist 3 · head 4 · body 6]',b:'遥控器接进大脑的地方。twist 是（前后速度、左右速度、转向速度），head 是 4 个头颈关节的目标偏移，body 是 6 维位姿槽位。本任务里 body 只以极小幅度采样"保活"，真正用它的是爬起任务。槽位宁可闲置也不删除：61 维契约不能破。',cmd:true}
+  ];
+  const bar=$('#obsbar'),det=$('#obsdetail');let cur=0;
+  function render(){
+    const c=COL();
+    bar.innerHTML='';
+    segs.forEach((s,i)=>{
+      const b=document.createElement('button');
+      b.className='seg'+(i===cur?' on':'');b.setAttribute('role','tab');
+      b.style.flex=s.d;b.style.background=s.ci==='mut'?c.mut:c[s.ci];
+      if(s.op)b.style.opacity=s.op;if(i===cur)b.style.opacity=1;
+      b.innerHTML=`${s.n}<br>${s.d}`;b.style.flexDirection='column';b.style.lineHeight='1.3';
+      b.onclick=()=>{cur=i;render()};
+      bar.appendChild(b);
+    });
+    const s=segs[cur];
+    det.innerHTML=`<div class="h"><span class="name">${s.n}</span><span class="dims">${s.d} 维 · 第 ${segs.slice(0,cur).reduce((a,x)=>a+x.d,0)}–${segs.slice(0,cur+1).reduce((a,x)=>a+x.d,0)-1} 位</span><span style="color:var(--muted)">${s.t}</span></div>${s.b}`+
+    (s.cmd?`<div class="cmdbreak"><div style="flex:3;background:${c.c2}">twist 3</div><div style="flex:4;background:${c.c3}">head_pose 4</div><div style="flex:6;background:${c.mut}">body_pose 6</div></div>`:'');
+  }
+  reg(render);
+})();
+
+/* ================= 图 5.1 γ 视界 ================= */
+(function(){
+  const el=$('#gchart'),sl=$('#gslider');
+  function render(){
+    const c=COL(),g=sl.value/1000;
+    $('#gv').textContent=g.toFixed(3);
+    const hs=1/(1-g),ts=hs*0.02;
+    $('#ghor').textContent=`${Math.round(hs)} 步 = ${ts<1?ts.toFixed(2):ts.toFixed(1)} s`;
+    const W=940,H=230,L=60,R=16,T=16,B=40,pw=W-L-R,ph=H-T-B,XM=6;
+    const X=v=>L+v/XM*pw,Y=v=>T+ph-v*ph;
+    let d='';for(let i=0;i<=300;i++){const t=i/300*XM;const w=Math.pow(g,t*50);d+=(i?'L':'M')+X(t).toFixed(1)+' '+Y(w).toFixed(1)+' '}
+    let grid='';[0,.25,.5,.75,1].forEach(v=>{grid+=`<line class="grid" x1="${L}" x2="${W-R}" y1="${Y(v)}" y2="${Y(v)}"/><text class="axis" x="${L-8}" y="${Y(v)+4}" text-anchor="end">${v}</text>`});
+    [0,1,2,3,4,5,6].forEach(t=>{grid+=`<text class="xlab" x="${X(t)}" y="${H-22}" text-anchor="middle">${t}s</text>`});
+    const marks=[[0.5,'一个步态周期'],[1.5,'摔倒到站稳']];
+    let mk='';marks.forEach(([t,lb])=>{mk+=`<line x1="${X(t)}" x2="${X(t)}" y1="${T}" y2="${T+ph}" class="evline"/><text class="evtext" x="${X(t)+4}" y="${T+12}">${lb}</text>`});
+    const hx=Math.min(ts,XM);
+    mk+=`<line x1="${X(hx)}" x2="${X(hx)}" y1="${T}" y2="${T+ph}" stroke="${c.ac}" stroke-width="1.5" stroke-dasharray="5 4"/><text class="evtext" x="${Math.min(X(hx)+4,W-160)}" y="${T+ph-8}" fill="${c.acT}">责任窗口 1/(1−γ)${ts>XM?'（已出画）':''}</text>`;
+    el.innerHTML=`<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="未来奖励的记账权重随时间衰减的曲线">
+      ${grid}${mk}<path d="${d}" fill="none" stroke="${c.ac}" stroke-width="2.4"/>
+      <text class="axis" x="${L}" y="${T-3}">t 秒后的分数，现在记多少账（γ^t，50 Hz）</text>
+      <text class="xlab" x="${W-R}" y="${H-6}" text-anchor="end">未来时间 t（秒）</text></svg>`;
+  }
+  sl.addEventListener('input',render);reg(render);
+})();
+
+/* ================= 图 4.1 REINFORCE 实验台 ================= */
+(function(){
+  const el=$('#pg-canvas');
+  const cv=document.createElement('canvas');el.appendChild(cv);
+  const Rfn=a=>1.6*Math.exp(-((a-1.3)**2)/(2*0.42**2))+0.85*Math.exp(-((a+1.25)**2)/(2*0.5**2));
+  const A0=-3,A1=3;
+  let mu,sig,steps,run=null,lastBatch=[],vOn=null,vOff=null,useBase=true;
+  function resetSt(){mu=-1.9;sig=0.9;steps=0;lastBatch=[];vOn=null;vOff=null;draw();ro()}
+  function gauss(){let u=0,v=0;while(!u)u=Math.random();while(!v)v=Math.random();return Math.sqrt(-2*Math.log(u))*Math.cos(2*Math.PI*v)}
+  function batch(){
+    const N=64,as=[],rs=[];
+    for(let i=0;i<N;i++){const a=mu+sig*gauss();as.push(a);rs.push(Rfn(a))}
+    const b=rs.reduce((x,y)=>x+y,0)/N;
+    let gm=0,gs=0;const gOn=[],gOff=[];
+    for(let i=0;i<N;i++){
+      const z=(as[i]-mu)/sig;
+      const adv=useBase?rs[i]-b:rs[i];
+      gm+=adv*z/sig;gs+=adv*(z*z-1);
+      gOn.push((rs[i]-b)*z/sig);gOff.push(rs[i]*z/sig);
+    }
+    gm/=N;gs/=N;
+    const sd=g=>{const m=g.reduce((x,y)=>x+y,0)/g.length;return Math.sqrt(g.reduce((x,y)=>x+(y-m)**2,0)/g.length)};
+    vOn=vOn==null?sd(gOn):vOn*0.9+sd(gOn)*0.1;
+    vOff=vOff==null?sd(gOff):vOff*0.9+sd(gOff)*0.1;
+    const lr=0.06;
+    mu=Math.max(-3,Math.min(3,mu+lr*gm));
+    sig=Math.max(0.06,Math.min(2.4,sig*Math.exp(lr*gs)));
+    steps++;lastBatch=as.map((a,i)=>[a,(useBase?rs[i]-b:rs[i])>=0]);
+    draw();ro();
+  }
+  function ro(){
+    $('#pg-mu').textContent=mu.toFixed(2);$('#pg-sig').textContent=sig.toFixed(2);$('#pg-n').textContent=steps;
+    let er=0;const M=400;for(let i=0;i<M;i++){const a=A0+(A1-A0)*i/M;er+=Rfn(a)*Math.exp(-((a-mu)**2)/(2*sig*sig))/(sig*Math.sqrt(2*Math.PI))}
+    $('#pg-er').textContent=(er*(A1-A0)/M).toFixed(3);
+    $('#pg-var-on').textContent=vOn==null?'—':vOn.toFixed(2);
+    $('#pg-var-off').textContent=vOff==null?'—':vOff.toFixed(2);
+  }
+  function draw(){
+    const c=COL(),dpr=devicePixelRatio||1,W=el.clientWidth||900,H=290;
+    cv.width=W*dpr;cv.height=H*dpr;cv.style.width=W+'px';cv.style.height=H+'px';
+    const g=cv.getContext('2d');g.scale(dpr,dpr);g.clearRect(0,0,W,H);
+    const L=14,Rr=14,T=12,B=34,pw=W-L-Rr,ph=H-T-B;
+    const X=a=>L+(a-A0)/(A1-A0)*pw,Y=v=>T+ph-v/1.75*ph;
+    g.strokeStyle=css('--line2');g.lineWidth=1;g.beginPath();g.moveTo(L,Y(0));g.lineTo(W-Rr,Y(0));g.stroke();
+    g.strokeStyle=c.ink;g.lineWidth=1.8;g.beginPath();
+    for(let i=0;i<=300;i++){const a=A0+(A1-A0)*i/300;const x=X(a),y=Y(Rfn(a));i?g.lineTo(x,y):g.moveTo(x,y)}g.stroke();
+    g.strokeStyle=c.ac;g.lineWidth=2.2;g.fillStyle=css('--accent-ghost');g.beginPath();
+    const pk=1/(sig*Math.sqrt(2*Math.PI));
+    for(let i=0;i<=300;i++){const a=A0+(A1-A0)*i/300;const p=Math.exp(-((a-mu)**2)/(2*sig*sig))/(sig*Math.sqrt(2*Math.PI));
+      const y=Y(p/Math.max(pk,0.9)*1.15);const x=X(a);i?g.lineTo(x,y):g.moveTo(x,y)}
+    g.stroke();g.lineTo(X(A1),Y(0));g.lineTo(X(A0),Y(0));g.closePath();g.fill();
+    g.strokeStyle=c.acT;g.setLineDash([4,3]);g.beginPath();g.moveTo(X(mu),T);g.lineTo(X(mu),Y(0));g.stroke();g.setLineDash([]);
+    lastBatch.forEach(([a,good])=>{g.strokeStyle=good?c.ok:c.err;g.lineWidth=1.6;
+      g.beginPath();g.moveTo(X(a),Y(0)+3);g.lineTo(X(a),Y(0)+13);g.stroke()});
+    g.fillStyle=c.mut;g.font='11px IBM Plex Mono,monospace';
+    g.fillText('得分地形 R(a)',X(1.3)-38,Y(1.62)-8);
+    g.fillStyle=c.acT;g.fillText('策略分布（μ, σ）',X(mu)+6,T+14);
+    g.fillStyle=c.mut;g.fillText('小山头（局部最优）',X(-1.25)-52,Y(0.9)-8);
+    g.fillText('尝试：绿 = 被加强，红 = 被削弱',L+2,H-6);
+    g.fillText('动作 a',W-Rr-46,Y(0)-6);
+  }
+  $('#pg-step').onclick=()=>{stop();batch()};
+  function stop(){if(run){clearInterval(run);run=null;$('#pg-run').textContent='▶ 训练'}}
+  $('#pg-run').onclick=()=>{if(run){stop()}else{$('#pg-run').textContent='⏸ 暂停';run=setInterval(batch,80)}};
+  $('#pg-reset').onclick=()=>{stop();resetSt()};
+  $('#pg-base').onclick=e=>{useBase=!useBase;e.target.setAttribute('aria-pressed',useBase);e.target.textContent=useBase?'基线：开':'基线：关'};
+  addEventListener('resize',draw);
+  reg(draw);resetSt();
+})();
+
+/* ================= 图 5.2 GAE 权重 ================= */
+(function(){
+  const el=$('#lchart'),sl=$('#lslider'),GAM=0.99;
+  function render(){
+    const c=COL(),lam=sl.value/100;
+    $('#lv').textContent=lam.toFixed(2);
+    const gl=GAM*lam;
+    $('#lhalf').textContent=gl<=0?'0 步':gl>=1?'∞':`${(Math.LN2/-Math.log(gl)).toFixed(1)} 步 = ${(Math.LN2/-Math.log(gl)*0.02).toFixed(2)} s`;
+    const W=940,H=220,L=60,R=16,T=16,B=40,pw=W-L-R,ph=H-T-B,K=30;
+    let bars='';const bw=pw/K*0.72;
+    for(let k=0;k<K;k++){
+      const w=Math.pow(gl,k);const x=L+k/K*pw+(pw/K-bw)/2;const h=w*ph;
+      bars+=`<rect x="${x.toFixed(1)}" y="${(T+ph-h).toFixed(1)}" width="${bw.toFixed(1)}" height="${Math.max(h,0.5).toFixed(1)}" rx="2" fill="${c.c2}"/>`;
+    }
+    let grid='';[0,.5,1].forEach(v=>{grid+=`<line class="grid" x1="${L}" x2="${W-R}" y1="${T+ph-v*ph}" y2="${T+ph-v*ph}"/><text class="axis" x="${L-8}" y="${T+ph-v*ph+4}" text-anchor="end">${v}</text>`});
+    [0,5,10,15,20,25].forEach(k=>{grid+=`<text class="xlab" x="${L+k/K*pw+pw/K/2}" y="${H-22}" text-anchor="middle">${k}</text>`});
+    const cap=lam===0?'λ=0：只信评论家的一步预估（稳，但吃它的偏差）':lam===1?'λ=1：只信整局实测（无偏差，但噪声大）':`λ=${lam.toFixed(2)}：两头各信一点，按指数混合`;
+    el.innerHTML=`<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="GAE 里 k 步之外的实测误差在记账中的权重">
+      ${grid}${bars}
+      <text class="axis" x="${L}" y="${T-3}">k 步之外的"意外"记多少账　(γλ)^k，γ=0.99</text>
+      <text class="xlab" x="${W-R}" y="${H-22}" text-anchor="end">k（步）</text>
+      <text class="xlab" x="${W/2}" y="${H-5}" text-anchor="middle">${cap}</text></svg>`;
+  }
+  sl.addEventListener('input',render);reg(render);
+})();
+
+/* ================= 图 6.1 clip ================= */
+(function(){
+  const el=$('#clipchart'),sl=$('#eslider');let pos=true;
+  function render(){
+    const c=COL(),eps=sl.value/100;
+    $('#ev').textContent=eps.toFixed(2);
+    $('#clip-pos').setAttribute('aria-pressed',pos);$('#clip-neg').setAttribute('aria-pressed',!pos);
+    const W=940,H=250,L=60,R=16,T=16,B=40,pw=W-L-R,ph=H-T-B;
+    const X=r=>L+r/2*pw,YV=-2.2,YM=2.2,Y=v=>T+(YM-v)/(YM-YV)*ph;
+    const A=pos?1:-1;
+    const raw=r=>r*A;
+    const clip=r=>Math.min(r*A,Math.max(Math.min(r,1+eps),1-eps)*A);
+    let d1='',d2='';
+    for(let i=0;i<=200;i++){const r=i/100;d1+=(i?'L':'M')+X(r).toFixed(1)+' '+Y(raw(r)).toFixed(1)+' ';d2+=(i?'L':'M')+X(r).toFixed(1)+' '+Y(clip(r)).toFixed(1)+' '}
+    let grid='';[-2,-1,0,1,2].forEach(v=>{grid+=`<line class="${v===0?'zero':'grid'}" x1="${L}" x2="${W-R}" y1="${Y(v)}" y2="${Y(v)}"/><text class="axis" x="${L-8}" y="${Y(v)+4}" text-anchor="end">${v}</text>`});
+    [0,.5,1,1.5,2].forEach(r=>{grid+=`<text class="xlab" x="${X(r)}" y="${H-22}" text-anchor="middle">${r}</text>`});
+    const z1=X(1-eps),z2=X(1+eps);
+    const flat=pos?`<rect x="${z2}" y="${T}" width="${W-R-z2}" height="${ph}" fill="${c.ac}" opacity="0.08"/><text class="evtext" x="${z2+8}" y="${T+16}">这片区域梯度为零：再加强也没奖励</text>`
+                  :`<rect x="${L}" y="${T}" width="${z1-L}" height="${ph}" fill="${c.ac}" opacity="0.08"/><text class="evtext" x="${L+8}" y="${T+16}">这片区域梯度为零：再削弱也没奖励</text>`;
+    el.innerHTML=`<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="PPO 削平后的目标函数与不设防版本的对比">
+      ${grid}${flat}
+      <line x1="${z1}" x2="${z1}" y1="${T}" y2="${T+ph}" class="evline"/><line x1="${z2}" x2="${z2}" y1="${T}" y2="${T+ph}" class="evline"/>
+      <text class="evtext" x="${z1}" y="${T+ph+14}" text-anchor="middle">1−ε</text><text class="evtext" x="${z2}" y="${T+ph+14}" text-anchor="middle">1+ε</text>
+      <path d="${d1}" fill="none" stroke="${c.mut}" stroke-width="1.6" stroke-dasharray="5 5"/>
+      <path d="${d2}" fill="none" stroke="${c.ac}" stroke-width="2.6"/>
+      <text class="axis" x="${L}" y="${T-3}">这个样本给的目标值 L(r)　当前 Â=${pos?'+1':'−1'}</text>
+      <text class="slabel" x="${W-R-4}" y="${Y(raw(2))+(pos?-8:14)}" fill="${c.mut}" text-anchor="end">不设防 r·Â</text>
+      <text class="slabel" x="${W-R-4}" y="${Y(clip(2))+(pos?16:-8)}" fill="${c.acT}" text-anchor="end">PPO clip</text>
+      <text class="xlab" x="${W/2}" y="${H-5}" text-anchor="middle">概率比 r = π_new / π_old</text></svg>`;
+  }
+  $('#clip-pos').onclick=()=>{pos=true;render()};
+  $('#clip-neg').onclick=()=>{pos=false;render()};
+  sl.addEventListener('input',render);reg(render);
+})();
+
+/* ================= 图 8.1 奖励浏览器 ================= */
+(function(){
+  const RW=[
+    {k:'track_linear_velocity',g:'给分 · 任务',w:'2.0',cap:2,fm:'2.0 · exp(−(‖v̂ₓᵧ−vₓᵧ‖² + v_z²) / 0.1)',
+     why:'主任务：按指令的方向和速度走（前后 ±0.4、左右 ±0.3 m/s）。竖直速度也在分母里，等于顺手规定了"不许跳着走"。std²=0.1 换算成容差约 0.32 m/s，对 0.4 的最高指令来说算管得紧。实得 1.32，相当于 66% 的完成度。'},
+    {k:'track_angular_velocity',g:'给分 · 任务',w:'2.0',cap:2,fm:'2.0 · exp(−((ω̂_z−ω_z)² + ‖ω_xy‖²) / 0.5)',
+     why:'按指令转向（±1.0 rad/s）。容差给得比线速度松一倍多，等于承认转身可以糙一点。第 12 章能看到，转向最终确实是短板。容差定了优先级，也就顺手定了短板在哪。'},
+    {k:'head_pose_tracking',g:'给分 · 任务',w:'2.0',cap:2,fm:'2.0 · mean₄ [ exp(−(err_j / 0.5)²) ]',
+     why:'头部姿态追踪，表演型机器人的看家科目。对 4 个关节取平均而不是加总平方：一个关节错得离谱，别的关节还能拿分，梯度不会整体熄火。std=0.5 弧度很宽，是为了课程把指令范围拉满后，远距离指令仍留有一丝梯度。'},
+    {k:'body_pose_tracking',g:'给分 · 任务',w:'0.0',cap:0,fm:'0.0 ×（6 维位姿追踪）',
+     why:'权重为零的占位者。指令照常采样、观测槽位照常保留，只是不给分。目的：让 61 维契约在所有任务间保持一致，也让这几个输入神经元保持活性。爬起任务里同一个槽位就有真实权重了。'},
+    {k:'upright',g:'给分 · 塑形',w:'2.0',cap:2,fm:'2.0 · exp(−‖g_proj,xy‖² / 0.05)',
+     why:'保持直立，全表容差最紧的一项。事故二的主角：原本权重 1.0、容差松，4° 前倾每步只扣 0.05 分，约等于免费，鸭子就一直歪着走。权重翻倍、容差减半后，同样的前倾贵了四倍，躯干才立直。'},
+    {k:'pose',g:'给分 · 塑形',w:'1.0',cap:1,fm:'1.0 · exp(−Σ_j ((q_j − q_home,j) / std_j)²)',
+     why:'把关节往自然姿态轻轻拉的弹簧。std 逐关节手调，还分站、走两套：站立时髋部横滚管得极严（0.05 弧度，防外八），走路时髋部俯仰放得很宽（0.4，摆腿需要自由）。管辖范围明确排除头颈，那是事故四换来的规矩：一个关节只能有一个当家的奖励。'},
+    {k:'air_time',g:'给分 · 塑形',w:'3.0',cap:6,fm:'3.0 · Σ_足 1[0.125s < 腾空 < 0.30s] · 1[有移动指令]',
+     why:'步态的心脏，全表最高权重：脚腾空时长落在合理窗口就给分。下限 0.125 秒挡住碎步蹭地，上限 0.30 秒挡住大跳。指令为零时整项关闭，站着不该抬脚；而"安静站好"这门课由课程安排（第 9 章）。两只脚各自计分，所以满分 6。'},
+    {k:'foot_clearance',g:'扣分 · 塑形',w:'−2.0',cap:null,fm:'−2.0 · Σ_足 |离地高度 − 0.02| · 脚的水平速度',
+     why:'摆动的脚离 2 厘米目标高度差多少，按脚速加权扣分。移动中拖地最贵，静止的脚不计。目标从 1 厘米提到 2 厘米是实测后的加码：策略总爱贴着"刚好不绊倒"的下限走。'},
+    {k:'foot_swing_height',g:'扣分 · 塑形',w:'−0.25',cap:null,fm:'−0.25 ·（摆动峰值高度的偏差）',
+     why:'和上一项同族，反方向：压制甩得过高的腿。权重故意小一个量级，它管的是好看，不许喧宾夺主。'},
+    {k:'action_rate_l2',g:'扣分 · 正则',w:'−0.1 → −1.0',cap:null,fm:'w(t) · ‖a_t − a_{t−1}‖²，w 由课程五级加到 −1.0',
+     why:'抖动罚款，给真机买的保险（第 11 章）：高频抖动在仿真里免费，在真机上放大齿隙、吃电流、废齿轮。起步只收 −0.1 是刻意宽容，先让走路发生；1500 轮加到 −1.0 后成为全表最大扣分项，逼出天生平滑的策略，而不是事后加滤波（那会毁掉迁移）。'},
+    {k:'dof_pos_limits',g:'扣分 · 正则',w:'−1.0',cap:null,fm:'−1.0 · Σ_j 贴近机械限位的越界量',
+     why:'别把关节顶到头。真机上顶死限位等于堵转大电流，烧的是塑料齿轮。训练末期这项几乎为零：策略学会了在限位内活动。'},
+    {k:'self_collisions',g:'扣分 · 正则',w:'−1.0',cap:null,fm:'−1.0 · 自碰撞的接触数',
+     why:'腿别撞电池仓。配置注释很诚实：关节限位其实已经让腿够不着躯干了，这项是多留一道安全边的软围栏。全程几乎不触发，但围栏的价值从来不看触发次数。'},
+    {k:'foot_slip',g:'扣分 · 正则',w:'−0.1',cap:null,fm:'−0.1 · Σ_触地足 脚底滑动速度',
+     why:'事故三里提过的配角：触地的脚在地面滑动，按速度扣分。最早定 −1.0，直接禁掉了这台机器靠脚底旋转来转身的天然方式。减到 −0.1 后，正常的转身打滑不再心疼，只有滑上瘾才亏。'},
+    {k:'body_ang_vel',g:'扣分 · 正则',w:'−0.05',cap:null,fm:'−0.05 · ‖躯干 roll/pitch 角速度‖²',
+     why:'走路时身体别乱晃。和直立奖励互补：那个管"歪没歪"，这个管"晃多快"。'},
+    {k:'angular_momentum',g:'扣分 · 正则',w:'−0.02',cap:null,fm:'−0.02 · ‖全身角动量‖²',
+     why:'压制"靠甩头甩腿借角动量"的杂技式平衡。那种解在仿真里管用，上真机就是事故。权重极小，只削尖峰，不妨碍正常转身。'},
+    {k:'head_pose_bias',g:'扣分 · 正则',w:'0 → −3.0',cap:null,fm:'−w(t) · mean₄ |误差的 1 秒滑动平均|（L1）',
+     why:'事故一的正解本尊：只罚头部误差的 1 秒平均值。走路带起的晃动在平均里正负抵消，剩下的就是纯粹的"持续下垂"，而下垂是策略躲得掉的（把脖子指令抬高就行）。用 L1 不用高斯核也有讲究：偏得再远梯度也不衰减。前 600 轮权重为零：先学走路，再讲仪态。'}
+  ];
+  const bars=$('#rexbars'),det=$('#rexdetail');let cur=0;
+  RW.forEach(r=>r.v=last('Episode_Reward/'+r.k));
+  const vmax=Math.max(...RW.map(r=>Math.abs(r.v)));
+  function render(){
+    const c=COL();
+    let html='';let lastG='';
+    RW.forEach((r,i)=>{
+      if(r.g!==lastG){html+=`<div class="grp">${r.g}</div>`;lastG=r.g}
+      const frac=Math.abs(r.v)/vmax;
+      const pos=r.v>=0;
+      const zero=34;
+      const wPct=frac*(pos?100-zero-2:zero-2);
+      const bar=pos?`left:${zero}%;width:${wPct}%`:`right:${100-zero}%;width:${wPct}%`;
+      html+=`<button class="rrow${i===cur?' on':''}" role="tab" data-i="${i}">
+        <span class="nm">${r.k}</span>
+        <span class="barbox"><span style="position:absolute;top:0;bottom:0;left:${zero}%;width:1px;background:var(--line2)"></span>
+        <span class="bar" style="${bar};background:${pos?c.c1:c.c2}"></span></span>
+        <span class="val">${r.v>=0?'+':''}${r.v.toFixed(2)}</span></button>`;
+    });
+    bars.innerHTML=html;
+    bars.querySelectorAll('.rrow').forEach(b=>b.onclick=()=>{cur=+b.dataset.i;render()});
+    const r=RW[cur];
+    det.innerHTML=`<div class="h"><span class="nm">${r.k}</span><span class="pill">${r.g}</span></div>
+      <div class="meta"><span>权重 <b>${r.w}</b></span><span>实得 <b>${r.v>=0?'+':''}${r.v.toFixed(3)} /秒</b></span>${r.cap?`<span>满分 <b>${r.cap.toFixed(1)} /秒</b>（完成度 ${(r.v/r.cap*100).toFixed(0)}%）</span>`:''}</div>
+      <div class="fm">${r.fm}</div>
+      <div class="why">${r.why}</div>
+      <div id="rexspark" class="chart"></div>`;
+    const sp=S('Episode_Reward/'+r.k);
+    if(sp.length)mkLine($('#rexspark'),{h:130,series:[{name:'这一项的全程曲线',color:c.ac,pts:sp}],events:EV,evlabel:false,yzero:true,aria:r.k+' 随训练的曲线'});
+  }
+  reg(render);
+})();
+
+/* ================= 图 9.1 课程 ================= */
+(function(){
+  const el=$('#currchart');
+  function render(){
+    const c=COL();
+    el.innerHTML='<div id="cc-top" class="chart"></div><div id="cc-s" style="display:flex;flex-direction:column;gap:2px;margin-top:8px"></div>';
+    mkLine($('#cc-top'),{h:190,series:[{name:'平均回合得分',color:c.c1,pts:S('Train/mean_reward')}],events:EV,unit:'回合总分',aria:'平均回合得分曲线，课程加压时段出现平台与回落'});
+    const strips=[
+      ['Curriculum/action_rate_weight','抖动罚款权重'],
+      ['Curriculum/standing_envs','站立环境占比'],
+      ['Curriculum/head_pose_range','头部指令范围 (rad)'],
+      ['Curriculum/com_range','质心随机幅度 (m)'],
+      ['Curriculum/head_pose_bias_weight','下垂罚款权重']
+    ];
+    const box=$('#cc-s');
+    strips.forEach(([k,nm])=>{
+      const d=document.createElement('div');d.className='chart';box.appendChild(d);
+      mkLine(d,{h:64,series:[{name:nm,color:c.c2,pts:S(k)}],events:EV,evlabel:false,aria:nm+'的课程轨迹'});
+    });
+  }
+  reg(render);
+})();
+
+/* ================= 图 12.1 故事浏览器 ================= */
+(function(){
+  const area=$('#storyarea'),note=$('#storynote'),tabs=$('#storytabs'),freeBox=$('#storyfree'),sel=$('#freesel');
+  let cur='main';
+  const stories={
+    main:{note:'读法：先看回合长度的第一段陡坡（39 步冲到 900 步，只用了约 300 轮），那是"别摔倒"这门必修课。再看最下面两条的换位：训练末期 93% 的回合是活满 20 秒自然结束，摔倒成了少数事件。',
+      charts:c=>[
+        {h:180,unit:'回合总分',series:[{name:'平均得分',color:c.c1,pts:S('Train/mean_reward')}]},
+        {h:180,unit:'步（上限 1000）',series:[{name:'回合长度',color:c.c2,pts:S('Train/mean_episode_length')}]},
+        {h:150,unit:'每轮终止计数',series:[{name:'活满 20 秒',color:c.c4,pts:S('Episode_Termination/time_out')},{name:'摔倒',color:c.c3,pts:S('Episode_Termination/fell_over')}]}
+      ]},
+    conv:{note:'三条曲线互为证词：σ 收窄说明策略敢确定了；熵跟着由正转负（第 7 章的彩蛋，可以手算验证）；学习率被 KL 控制器压着走，每逢课程加压就先降速。三者同向变化，才敢下"收敛"的结论。只看得分说收敛，是会被课程的起伏骗到的。',
+      charts:c=>[
+        {h:170,unit:'动作噪声 σ（rad）',series:[{name:'探索幅度',color:c.c1,pts:S('Policy/mean_std')}]},
+        {h:170,unit:'策略熵（nats）',series:[{name:'熵',color:c.c2,pts:S('Loss/entropy')}],yzero:true},
+        {h:170,unit:'学习率（对数轴）',ylog:true,series:[{name:'学习率',color:c.c3,pts:S('Loss/learning_rate')}]}
+      ]},
+    track:{note:'前几百轮误差小是假象：那时指令本身接近零，没什么可错的。有意义的读法是课程稳定后的水平：直行误差稳在 0.42 m/s 左右，转向误差在 1.0 rad/s 上下、波动也大。这就是第 12 章末尾的悬念，实验四从这里下手。',
+      charts:c=>[
+        {h:180,unit:'m/s',series:[{name:'直行误差',color:c.c1,pts:S('Metrics/twist/error_vel_xy')}]},
+        {h:180,unit:'rad/s',series:[{name:'转向误差',color:c.c2,pts:S('Metrics/twist/error_vel_yaw')}]}
+      ]},
+    free:{note:'37 条曲线随便翻。推荐三条：Perf/total_fps（吞吐的呼吸）、Loss/value（世界变难，估价跟着变难）、Episode_Metrics/mean_action_acc（抖动罚款的直接对象，看它被课程一步步压下去）。',
+      charts:c=>[{h:230,series:[{name:sel.value,color:c.ac,pts:S(sel.value)}]}]}
+  };
+  Object.keys(typeof TB!=='undefined'?TB:{}).sort().forEach(k=>{const o=document.createElement('option');o.value=k;o.textContent=k;sel.appendChild(o)});
+  if(sel.querySelector('option[value="Perf/total_fps"]'))sel.value='Perf/total_fps';
+  function render(){
+    const c=COL();
+    tabs.querySelectorAll('.bt').forEach(b=>b.setAttribute('aria-pressed',b.dataset.story===cur));
+    freeBox.style.display=cur==='free'?'block':'none';
+    area.innerHTML='';
+    stories[cur].charts(c).forEach(cf=>{
+      const d=document.createElement('div');d.className='chart';d.style.marginBottom='6px';area.appendChild(d);
+      mkLine(d,Object.assign({events:EV,evlabel:false},cf));
+    });
+    note.textContent=stories[cur].note;
+  }
+  tabs.querySelectorAll('.bt').forEach(b=>b.onclick=()=>{cur=b.dataset.story;render()});
+  sel.addEventListener('change',render);
+  reg(render);
+})();
+
+/* ================= 导航 ================= */
+(function(){
+  const chips=[...$$('#topnav a.chip')];
+  const ids=chips.map(a=>a.getAttribute('href').slice(1));
+  const secs=ids.map(id=>document.getElementById(id)).filter(Boolean);
+  const spy=()=>{
+    let on=ids[0];
+    for(const s of secs){if(s.getBoundingClientRect().top<140)on=s.id}
+    chips.forEach(a=>a.classList.toggle('on',a.getAttribute('href')==='#'+on));
+    const h=document.documentElement;
+    $('#navprog').style.width=(h.scrollTop/(h.scrollHeight-h.clientHeight)*100)+'%';
+  };
+  addEventListener('scroll',spy,{passive:true});spy();
+})();
+</script>

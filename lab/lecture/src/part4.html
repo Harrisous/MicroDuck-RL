@@ -1,0 +1,179 @@
+<!-- ================= 第 6 章 ================= -->
+<section class="sec" id="c6"><div class="wrap">
+  <p class="eyebrow"><span class="idx">第 6 章</span>稳定</p>
+  <h2>一次只走一小步：PPO</h2>
+
+  <p>先看清楚麻烦三有多致命。</p>
+
+  <p>监督学习里，一次糟糕的参数更新没什么大不了：数据还是那些数据，下一步再修回来就是。RL 不一样，<em class="zh">数据是策略自己采的</em>。一次过猛的更新把策略改坏，接下来收集的就全是坏策略的数据；拿垃圾数据再更新，策略更坏。这是个正反馈的死亡螺旋，几分钟就能毁掉几小时的训练。所以步长问题在 RL 里不是调参细节，是生死问题。</p>
+
+  <p>麻烦还有个孪生兄弟。每批数据花 1.36 秒才采到（下一章你会看到这是整个训练最贵的环节），只做一次梯度更新太浪费，我们想用同一批数据连做二十次。但从第二次起，策略已经变了，数据是"旧策略"采的。用旧数据评新策略，得乘一个修正系数，就是新旧策略对同一动作的概率之比：</p>
+
+  <div class="formula">
+    <div class="fx">r(θ) = <span class="frac"><span class="nu">π<sub>新</sub>(a|o)</span><span class="de">π<sub>旧</sub>(a|o)</span></span>　　r=1 没变；r=1.3 表示新策略让这个动作可能了 30%</div>
+    <div class="why">这个修正只在 r 接近 1 时靠谱。策略改多了，r 飘远，修正本身就失效了。两个麻烦指向同一个结论：更新必须限制在旧策略附近。</div>
+  </div>
+
+  <p>怎么限制？2015 年的 TRPO 用二阶优化给策略间距离上硬约束，能用但笨重。2017 年的 PPO 换了个轻巧到近乎狡猾的思路：<em class="zh">不加约束，直接把目标函数削平</em>。让 r 一旦越界，继续往外推就没有任何收益：</p>
+
+  <div class="formula">
+    <div class="fx">L<sup>CLIP</sup> = E[ min( r·Â ,　clip(r, 1−ε, 1+ε)·Â ) ]　　ε = 0.2</div>
+    <div class="why">clip 把 r 夹在 [0.8, 1.2]。min 保证"削平"只削对自己有利的方向。下面的图比文字直观得多。</div>
+  </div>
+
+  <figure class="fig" style="max-width:1000px">
+    <div class="fighead"><span class="figtag">图 6.1 · 交互</span><span class="figtitle">clip 到底削掉了什么</span></div>
+    <div class="figbody">
+      <div class="figctl">
+        <button class="bt" id="clip-pos" aria-pressed="true">这个动作是好的（Â&gt;0）</button>
+        <button class="bt" id="clip-neg" aria-pressed="false">这个动作是坏的（Â&lt;0）</button>
+        <label>ε = <span class="readout" id="ev">0.20</span><input type="range" id="eslider" min="5" max="50" value="20" aria-label="clip epsilon"></label>
+      </div>
+      <div class="chart" id="clipchart"></div>
+    </div>
+    <figcaption>怎么看：横轴是概率比 r，纵轴是这个样本给出的目标值。虚线是不设防的版本，激励无限延伸；实线是 PPO。好动作（Â&gt;0）：加强到 r=1.2 为止，再加强没奖励，<b>见好就收</b>。坏动作（Â&lt;0）：削弱到 r=0.8 为止，<b>点到即止</b>。再玩个细节：切到 Â&gt;0 后看 r&lt;1 的那段，斜率还在。意思是：一个好动作若被误伤压低了概率，梯度会把它拉回来。整套 TRPO 的机械，被一个 min 和一个 clip 取代了。</figcaption>
+  </figure>
+
+  <h3>rsl_rl 里的完整配方</h3>
+
+  <p>真正跑在 GPU 上的损失函数是三项之和，外加一个自动挡机制。每一项都在这次训练里留下了看得见的痕迹：</p>
+
+  <div class="tblwrap"><table class="tb">
+    <tr><th>部件</th><th>作用</th><th>这次训练里的痕迹</th></tr>
+    <tr><td><b>L<sup>CLIP</sup></b></td><td>推进策略，管住步长</td><td>日志里 <code class="inline">Loss/surrogate</code> 始终是很小的负数（−0.01 上下）。它永远不会"收敛到零"，每轮都在邻域内推一小步，这是正常状态。</td></tr>
+    <tr><td><b>价值损失</b></td><td>训练评论家（拟合 V）</td><td>课程加压时它不降反升（0.04→0.33）：世界变难，估价跟着变难。可以当环境难度的温度计用。</td></tr>
+    <tr><td><b>熵奖励</b>（系数 0.01）</td><td>给"保持随机"发一点小钱</td><td>抵抗 σ 收得太快，就是防图 4.1 里"困死在小山头"。系数很小，只延缓，不阻止。</td></tr>
+  </table></div>
+
+  <p>自动挡是 rsl_rl 的招牌细节：每个小批次更新完，实测一下新旧策略实际拉开了多大距离（KL 散度），超速就把学习率砍下来，太慢就加回去：</p>
+
+  <pre class="code"><span class="file">rsl_rl/algorithms/ppo.py（原文如此）</span><span class="body"><span class="k">if</span> kl_mean &gt; self.desired_kl * <span class="n">2.0</span>:                    <span class="c"># 快于 0.02 → 刹车</span>
+    self.learning_rate = max(<span class="n">1e-5</span>, self.learning_rate / <span class="n">1.5</span>)
+<span class="k">elif</span> kl_mean &lt; self.desired_kl / <span class="n">2.0</span> <span class="k">and</span> kl_mean &gt; <span class="n">0.0</span>:  <span class="c"># 慢于 0.005 → 给油</span>
+    self.learning_rate = min(<span class="n">1e-2</span>, self.learning_rate * <span class="n">1.5</span>)</span></pre>
+
+  <p>于是学习率不再是需要人调的超参数，而是一个被控制的量。这次训练里它在 0.0013 和 0.00017 之间自动起伏，每逢课程加压就主动减速（第 12 章的曲线里看得清清楚楚）。clip 管单步不越界，KL 控制器管平均速度，双保险。</p>
+
+  <h3>把零件装回时间轴</h3>
+
+  <p>第 2 到第 6 章的所有零件，现在可以拼成一张完整的流程图。训练循环每 1.44 秒转一整圈，转了 5000 圈：</p>
+
+  <figure class="fig" style="max-width:1000px">
+    <div class="fighead"><span class="figtag">图 6.2</span><span class="figtitle">一次迭代：采 98,304 步，榨 20 次，然后扔掉</span></div>
+    <div class="figbody">
+    <svg viewBox="0 0 960 300" role="img" aria-label="一次训练迭代的数据流：4096 个环境各走 24 步产生 98304 条经历，计算优势，切成 4 个小批训练 5 轮共 20 次梯度更新，然后丢弃数据重新采集">
+      <defs><marker id="ar2" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="currentColor"/></marker></defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.3">
+        <rect x="20" y="40" width="200" height="96" rx="3"/>
+        <rect x="300" y="40" width="170" height="96" rx="3"/>
+        <rect x="550" y="16" width="390" height="150" rx="3" stroke="var(--accent)" stroke-width="1.6"/>
+      </g>
+      <g font-size="13" font-weight="600" fill="currentColor">
+        <text x="120" y="64" text-anchor="middle">① 采集经历</text>
+        <text x="385" y="64" text-anchor="middle">② 记账（GAE）</text>
+        <text x="745" y="40" text-anchor="middle" fill="var(--accent-text)">③ PPO 更新（榨干这批数据）</text>
+      </g>
+      <g font-size="11.5" fill="var(--muted)" font-family="IBM Plex Mono,monospace">
+        <text x="120" y="86" text-anchor="middle">4096 只鸭子 × 24 步</text>
+        <text x="120" y="104" text-anchor="middle">= 98,304 条 (o, a, r)</text>
+        <text x="120" y="122" text-anchor="middle">耗时 1.36 s（第 10 章）</text>
+        <text x="385" y="86" text-anchor="middle">γ=0.99 · λ=0.95</text>
+        <text x="385" y="104" text-anchor="middle">评论家带天眼估 V</text>
+        <text x="385" y="122" text-anchor="middle">算出每步的优势 Â</text>
+        <text x="745" y="64" text-anchor="middle">5 轮 × 4 小批（每批 24,576 条）</text>
+        <text x="745" y="82" text-anchor="middle">= 20 次梯度更新，共 0.084 s</text>
+        <text x="745" y="104" text-anchor="middle">每小批：clip 目标 + 价值损失 + 熵</text>
+        <text x="745" y="122" text-anchor="middle">实测 KL → 学习率自动加减挡</text>
+        <text x="745" y="144" text-anchor="middle">梯度裁剪后交给 Adam</text>
+      </g>
+      <g stroke="currentColor" stroke-width="1.3" fill="none">
+        <line x1="220" y1="88" x2="296" y2="88" marker-end="url(#ar2)"/>
+        <line x1="470" y1="88" x2="546" y2="88" marker-end="url(#ar2)"/>
+        <path d="M745 166 L745 210 L120 210 L120 140" marker-end="url(#ar2)"/>
+      </g>
+      <text x="430" y="228" text-anchor="middle" font-size="11" fill="var(--muted)" font-family="IBM Plex Mono,monospace">④ 新策略接管 4096 只鸭子，旧数据全部作废（同策略学习的纪律）</text>
+      <g font-size="11.5" font-family="IBM Plex Mono,monospace">
+        <text x="20" y="266" fill="var(--muted)">一圈 1.44 s：</text>
+        <rect x="120" y="254" width="500" height="14" fill="var(--accent-ghost)" stroke="var(--line2)"/>
+        <rect x="120" y="254" width="470" height="14" fill="var(--accent)" opacity=".75"/>
+        <rect x="590" y="254" width="30" height="14" fill="var(--c2)"/>
+        <text x="355" y="265" text-anchor="middle" fill="#fff" font-weight="600">采集经历 94%</text>
+        <text x="628" y="265" fill="var(--muted)">学习 6%</text>
+        <text x="700" y="265" fill="var(--faint)">× 5000 圈 = 112 分钟</text>
+      </g>
+    </svg>
+    </div>
+    <figcaption>底部的时间条是实测值：<b>94% 的时间在"生活"，6% 的时间在"学习"</b>。这个悬殊的比例解释了本章开头的纠结（数据太贵，必须榨 20 次），也解释了为什么只榨 20 次就收手（数据毕竟是旧的，榨狠了 KL 超标，自动挡会一路降速抗议）。它还预告了第 10 章：想训得快，优化的重点不是网络，是仿真器。</figcaption>
+  </figure>
+
+  <p class="hook">→ 三个麻烦全部落地。剩下一个悬念：承载这一切的神经网络到底长什么样？<b>第 7 章，它小得可能让你失望。</b></p>
+</div></section>
+
+<hr class="divider">
+
+<!-- ================= 第 7 章 ================= -->
+<section class="sec" id="c7"><div class="wrap">
+  <p class="eyebrow"><span class="idx">第 7 章</span>载体</p>
+  <h2>装下这一切的网络，小得出奇</h2>
+
+  <p>没有 Transformer，没有注意力，没有视觉编码器。两个三层的全连接网络，加起来约 40 万参数，不到一张现代显卡显存的万分之一：</p>
+
+  <figure class="fig" style="max-width:1000px">
+    <div class="fighead"><span class="figtag">图 7.1</span><span class="figtitle">演员与评论家。上真机的只有演员</span></div>
+    <div class="figbody">
+    <svg viewBox="0 0 960 250" role="img" aria-label="演员网络：61 维观测经归一化进入 512、256、128 的全连接层，输出 14 个均值和 14 个可学的标准差；评论家结构相同但输入含特权信息，输出一个价值">
+      <defs><marker id="ar3" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="currentColor"/></marker></defs>
+      <g fill="none" stroke="currentColor" stroke-width="1.3">
+        <rect x="24" y="60" width="96" height="118" rx="3"/>
+        <rect x="170" y="60" width="80" height="118" rx="3"/>
+        <rect x="286" y="72" width="64" height="94" rx="3"/>
+        <rect x="386" y="84" width="56" height="70" rx="3"/>
+        <rect x="478" y="72" width="112" height="50" rx="3" stroke="var(--accent)" stroke-width="1.6"/>
+        <rect x="478" y="134" width="112" height="40" rx="3" stroke-dasharray="4 3"/>
+      </g>
+      <g font-size="12" fill="currentColor" text-anchor="middle" font-weight="600">
+        <text x="72" y="84">观测 61</text>
+        <text x="210" y="84">512</text><text x="318" y="96">256</text><text x="414" y="108">128</text>
+        <text x="534" y="92" fill="var(--accent-text)">μ · 14 个</text>
+        <text x="534" y="154">σ · 14 个</text>
+      </g>
+      <g font-size="10.5" fill="var(--muted)" text-anchor="middle" font-family="IBM Plex Mono,monospace">
+        <text x="72" y="104">先过在线归一化</text>
+        <text x="72" y="120">（running mean/var）</text>
+        <text x="210" y="102">ELU</text><text x="318" y="114">ELU</text><text x="414" y="126">ELU</text>
+        <text x="534" y="110" fill="var(--accent-text)">目标角的均值</text>
+        <text x="534" y="168">独立参数，不看观测</text>
+      </g>
+      <g stroke="currentColor" stroke-width="1.2" fill="none">
+        <line x1="120" y1="119" x2="166" y2="119" marker-end="url(#ar3)"/>
+        <line x1="250" y1="119" x2="282" y2="119" marker-end="url(#ar3)"/>
+        <line x1="350" y1="119" x2="382" y2="119" marker-end="url(#ar3)"/>
+        <line x1="442" y1="103" x2="474" y2="97" marker-end="url(#ar3)"/>
+      </g>
+      <text x="614" y="100" font-size="11.5" fill="var(--muted)" font-family="IBM Plex Mono,monospace">训练：a ~ 𝒩(μ, σ²)</text>
+      <text x="614" y="160" font-size="11.5" fill="var(--faint)" font-family="IBM Plex Mono,monospace">上真机：σ 扔掉，直接用 μ</text>
+      <g font-size="11.5" font-family="IBM Plex Mono,monospace">
+        <text x="24" y="220" fill="var(--muted)">评论家（结构相同的孪生，只在训练时存在）：</text>
+        <text x="360" y="220" fill="var(--muted)">61 维 + 天眼（真实线速度、无噪真值）→ 输出 1 个数 V(o)</text>
+      </g>
+      <text x="24" y="242" font-size="11.5" fill="var(--faint)" font-family="IBM Plex Mono,monospace">全部参数约 0.4M。它要在树莓派级的芯片上以 50 Hz 跑推理，小不是妥协，是需求。</text>
+    </svg>
+    </div>
+    <figcaption>两个不起眼但都有理由的选择。<b>激活函数用 ELU 而不是 ReLU</b>：ELU 处处平滑，而这个网络的输出就是关节轨迹，激活函数的棱角会直接变成动作的棱角。<b>σ 不看观测</b>：探索的胆量是训练进程的属性，不是某个姿势的属性，14 个独立参数刚刚好，还让熵有解析解（见下面的彩蛋）。</figcaption>
+  </figure>
+
+  <h3>一个会咬人的部署细节</h3>
+
+  <p>61 个输入的量纲相差悬殊：重力向量在 ±1 之间，关节速度能到 ±20。直接喂网络，大数值的维度会淹没小数值的。所以输入先过一层在线归一化：训练中持续统计每一维的均值和方差，把输入拉平。</p>
+
+  <p>陷阱在于：这些统计量是<em class="zh">模型的一部分</em>。导出模型上真机时，如果只带走网络权重、忘了归一化，策略看到的输入尺度完全不对，行为会彻底错乱。更糟的是这个 bug 在仿真回放里查不出来，因为回放工具"好心"地帮你归一化了。所以这个仓库立了条铁律：导出只准走 <code class="inline">scripts/export.py</code>，它把归一化直接烘进 ONNX 计算图。你训练的模型已经这样导出过了，输入输出就是干净的 [1,61] → [1,14]。</p>
+
+  <div class="war">
+    <div class="tag lesson">彩蛋：一道可以手算验证的题</div>
+    <p>日志里的策略熵从 17.6 一路降到 <b>−4.48</b>。熵怎么会是负数？因为连续分布用的是微分熵，本来就可以为负。对角高斯的熵有解析式：H = Σ<sub>i</sub> ½·ln(2πe·σ<sub>i</sub>²)。你可以现在就验算：代入训练起点 σ=1.0，得 14 × 1.419 ≈ <b>19.9</b>；代入终点 σ=0.177，得 14 × (−0.314) ≈ <b>−4.4</b>。和日志两端对上了（差的零头来自 14 个 σ 不完全相等）。这条曲线里没有任何神秘的东西，全是第 3 章那 14 个数字的直接后果。</p>
+  </div>
+
+  <p class="hook">→ 到这里，"怎么学"的机器全部讲完。但机器只负责把分数最大化，<b>分数本身是人写的</b>。写分数是整个项目里最像手艺的部分，失败最多，故事也最多。<b>第 8 章。</b></p>
+</div></section>
+
+<hr class="divider">

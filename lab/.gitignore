@@ -1,0 +1,5 @@
+# 上游 .gitignore 忽略了 *.onnx / *.pt / logs / data / artifacts 等。
+# lab/ 里要留存的小体积产物在这里放行；checkpoint (*.pt) 仍然不进 git。
+!*.onnx
+dist/
+__pycache__/
