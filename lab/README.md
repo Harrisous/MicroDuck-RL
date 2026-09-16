@@ -1,6 +1,6 @@
 # lab
 
-我用 [microduck_rl](https://github.com/pollen-robotics/microduck_rl) 学强化学习的实验记录。上游代码原样保留，我自己的东西都放在这个目录里。
+我用 [microduck_rl](https://github.com/pollen-robotics/microduck_rl) 学强化学习的实验记录。本仓库是上游 `develop` 分支的副本（不是 GitHub fork）：上游代码原样保留，只在根目录 README 顶部加了来源说明；我自己的东西都放在这个目录里。
 
 ## 目录
 
@@ -20,21 +20,20 @@
 
 | 分支 | 用途 |
 |---|---|
-| `develop` | 上游 `develop` 的纯镜像，不在上面提交 |
-| `lab` | 上游 `develop` + `lab/` 目录，默认分支 |
-| `exp/<名字>` | 需要改代码的实验，从 `lab` 分出；结论整理后写回 `lab` 的 `runs/` |
+| `main` | 上游 `develop` + README 来源说明 + `lab/`，默认分支 |
+| `exp/<名字>` | 需要改代码的实验，从 `main` 分出；结论整理后写回 `main` 的 `lab/runs/` |
 
-工作分支刻意不叫 `main`：上游也有一个 `main`（旧的发布点），同名分支在 GitHub 上点 "Sync fork" 会去合并它。
+远端配置：`origin` 是本仓库，`upstream` 是 `pollen-robotics/microduck_rl`。注意上游也有一个叫 `main` 的分支，那是 2026-08 的旧发布点，同步时要合并的是 `upstream/develop`，不是 `upstream/main`。
 
 同步上游：
 
 ```bash
 git fetch upstream
-git push origin upstream/develop:develop   # 更新镜像
-git switch lab && git merge upstream/develop
+git switch main && git merge upstream/develop
+git push origin main
 ```
 
-上游不会动 `lab/`，所以合并一般不会冲突。
+上游不会动 `lab/`。唯一可能冲突的地方是 README 开头：如果上游改了标题或头图，保留来源说明，其余照上游的来。
 
 ## 约定
 
